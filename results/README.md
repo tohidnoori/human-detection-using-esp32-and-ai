@@ -38,7 +38,7 @@ esp32-s3-final-project-phase-1/
 │
 ├── README.md
 │
-├── docs/
+├── 
 │   ├── README_01_Baseline_Scaling.md
 │   ├── README_02_Epsilon_Sensitivity.md
 │   ├── README_03_MinPts_Sensitivity.md
@@ -80,7 +80,7 @@ The experiment demonstrates:
 * Computational limitation before PSRAM exhaustion
 * Baseline DBSCAN performance on the ESP32-S3
 
-[Read Experiment 01 →](docs/README_01_Baseline_Scaling.md)
+[Read Experiment 01 →](README_01_Baseline_Scaling.md)
 
 ---
 
@@ -105,7 +105,7 @@ The experiment investigates:
 * Memory consumption
 * Effect of epsilon on brute-force DBSCAN
 
-[Read Experiment 02 →](docs/README_02_Epsilon_Sensitivity.md)
+[Read Experiment 02 →](README_02_Epsilon_Sensitivity.md)
 
 ---
 
@@ -133,7 +133,7 @@ The experiment measures:
 * Execution time
 * Memory usage
 
-[Read Experiment 03 →](docs/README_03_MinPts_Sensitivity.md)
+[Read Experiment 03 →](README_03_MinPts_Sensitivity.md)
 
 ---
 
@@ -165,7 +165,7 @@ The experiment investigates how density affects:
 * Execution time
 * Memory usage
 
-[Read Experiment 04 →](docs/README_04_Density_Sensitivity.md)
+[Read Experiment 04 →](README_04_Density_Sensitivity.md)
 
 ---
 
@@ -208,7 +208,7 @@ Correctness:
 All 13 benchmark configurations matched the baseline
 ```
 
-[Read Experiment 05 →](docs/README_05_Baseline_vs_Optimized.md)
+[Read Experiment 05 →](README_05_Baseline_vs_Optimized.md)
 
 ---
 
@@ -330,8 +330,8 @@ Therefore, for larger datasets on resource-constrained embedded hardware, spatia
 
 | Experiment | Report                                                           |
 | ---------- | ---------------------------------------------------------------- |
-| 01         | [Baseline Scaling](docs/README_01_Baseline_Scaling.md)           |
-| 02         | [Epsilon Sensitivity](docs/README_02_Epsilon_Sensitivity.md)     |
-| 03         | [MinPts Sensitivity](docs/README_03_MinPts_Sensitivity.md)       |
-| 04         | [Density Sensitivity](docs/README_04_Density_Sensitivity.md)     |
-| 05         | [Baseline vs Optimized](docs/README_05_Baseline_vs_Optimized.md) |
+| 01         | [Baseline Scaling](README_01_Baseline_Scaling.md)           |
+| 02         | [Epsilon Sensitivity](README_02_Epsilon_Sensitivity.md)     |
+| 03         | [MinPts Sensitivity](README_03_MinPts_Sensitivity.md)       |
+| 04         | [Density Sensitivity](README_04_Density_Sensitivity.md)     |
+| 05         | [Baseline vs Optimized](README_05_Baseline_vs_Optimized.md) |
