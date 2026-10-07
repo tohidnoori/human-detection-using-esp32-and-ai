@@ -323,31 +323,95 @@ This establishes a clear baseline for optimization.
 
 The next stage should not simply increase `N`. Instead, the benchmark should investigate **why DBSCAN becomes expensive and how the parameters affect its performance**.
 
-## Experiment A — Epsilon (`ε`) Sensitivity
+## Experiment 02 — Epsilon Sensitivity
 
-Keep:
+### Objective
 
-```text
-N = 1,440
-MinPts = 5
-Dimensions = 3
-```
+The purpose of this experiment is to investigate the effect of the DBSCAN epsilon parameter (`ε`) on clustering results, execution time, and memory usage.
 
-and vary:
+The dataset size, dimensionality, and `MinPts` were kept constant while only `ε` was changed.
 
-```text
-ε = 0.10
-ε = 0.20
-ε = 0.30
-ε = 0.50
-ε = 0.80
-ε = 1.00
-ε = 1.50
-```
+### Configuration
 
-This experiment measures how neighborhood density affects DBSCAN.
+| Parameter    |                          Value |
+| ------------ | -----------------------------: |
+| Dataset size |                    1440 points |
+| Dimensions   |                              3 |
+| MinPts       |                              5 |
+| Epsilon      |                    0.10 – 1.50 |
+| Hardware     |                 ESP32-S3 N16R8 |
+| Flash        |                          16 MB |
+| PSRAM        |                           8 MB |
+| Dataset      | Fixed deterministic 3D dataset |
 
-A larger `ε` means that each point has more neighboring points, potentially causing significantly more cluster expansion work.
+### Results
+
+| Epsilon | Execution Time (ms) | Clusters | Noise Points |
+| ------: | ------------------: | -------: | -----------: |
+|    0.10 |             423.763 |        3 |            3 |
+|    0.20 |             429.540 |        3 |            0 |
+|    0.30 |             432.358 |        3 |            0 |
+|    0.50 |             438.154 |        3 |            0 |
+|    0.80 |             439.261 |        3 |            0 |
+|    1.00 |             439.261 |        3 |            0 |
+|    1.50 |             439.262 |        3 |            0 |
+
+### Clustering Behavior
+
+The number of detected clusters remained constant at three for every tested epsilon value.
+
+At `ε = 0.10`, three points were classified as noise because the neighborhood radius was relatively small and these points did not have enough neighbors to satisfy `MinPts = 5`.
+
+Starting from `ε = 0.20`, all 1440 points were successfully assigned to the three clusters and no noise points were detected.
+
+Therefore, for this particular dataset and `MinPts = 5`, an epsilon of approximately `0.20` or greater was sufficient to connect all points to their corresponding dense regions.
+
+### Execution-Time Analysis
+
+Execution time increased slightly as epsilon increased:
+
+* Minimum: `423.763 ms` at `ε = 0.10`
+* Maximum: `439.262 ms` at `ε = 1.50`
+
+The total increase was approximately 3.7%.
+
+This relatively small change is expected from the current brute-force implementation. For every point, the algorithm scans the entire dataset to determine its neighbors. Therefore, changing epsilon changes the result of the distance comparisons but does not eliminate the need to perform the comparisons.
+
+The dominant computational behavior therefore remains approximately:
+
+`O(N²)`
+
+The experiment demonstrates that epsilon has a much stronger effect on the clustering result than on execution time for this implementation.
+
+### Memory Analysis
+
+Memory usage remained constant throughout the experiment.
+
+The main DBSCAN buffers were:
+
+* Points: 16.88 KB
+* Labels: 5.62 KB
+* Queue: 5.62 KB
+* Total: 28.12 KB
+
+Free heap remained approximately `363 KB`, while free PSRAM remained approximately `8161 KB` during all epsilon tests.
+
+Therefore, epsilon does not significantly affect memory consumption in this implementation.
+
+### Conclusion
+
+The experiment demonstrates three main observations:
+
+1. **Epsilon strongly affects clustering behavior.**
+   A very small epsilon (`0.10`) produced three noise points, while `ε ≥ 0.20` produced zero noise points.
+
+2. **The number of clusters was stable.**
+   All tested epsilon values produced three clusters, indicating that the three main groups remained spatially separated even at the largest tested epsilon.
+
+3. **Execution time and memory were relatively insensitive to epsilon.**
+   Execution time changed by only approximately 3.7%, while memory usage remained effectively constant. This is a consequence of the brute-force neighborhood search, which continues to compare each point against the entire dataset.
+
+Overall, the experiment shows that epsilon is primarily a **clustering-quality parameter** in the current implementation, rather than a major performance or memory parameter.
 
 ---
 

@@ -1,43 +1,35 @@
 #include <Arduino.h>
-#include <esp_heap_caps.h>
+#include <math.h>
 
 // ============================================================
+// Experiment 02 - DBSCAN Epsilon Sensitivity
 // ESP32-S3 N16R8
-// DBSCAN BENCHMARK - SAFE VERSION
+//
+// Fixed:
+//   N       = 1440
+//   DIM     = 3
+//   MinPts  = 5
+//
+// Variable:
+//   Epsilon = 0.10, 0.20, 0.30, 0.50,
+//             0.80, 1.00, 1.50
+//
+// Purpose:
+//   Analyze how epsilon affects DBSCAN clustering,
+//   noise points, number of clusters and execution time.
 // ============================================================
 
 #define DIMENSIONS 3
-
-// DBSCAN parameters
-#define EPSILON 0.50f
+#define DATASET_SIZE 1440
 #define MIN_PTS 5
 
-// Dataset sizes
-const size_t TEST_SIZES[] = {
-    90,
-    180,
-    360,
-    720,
-    1440,
-    2880,
-    5760,
-    11520,
-    23040
-};
+// Labels
+#define UNCLASSIFIED 0
+#define NOISE        -1
 
-const int NUM_TESTS =
-    sizeof(TEST_SIZES) / sizeof(TEST_SIZES[0]);
-
-// ============================================================
-// DBSCAN labels
-// ============================================================
-
-#define UNCLASSIFIED -1
-#define NOISE        -2
-
-// ============================================================
-// Point
-// ============================================================
+// ------------------------------------------------------------
+// Point structure
+// ------------------------------------------------------------
 
 struct Point3D
 {
@@ -46,21 +38,101 @@ struct Point3D
     float z;
 };
 
-// ============================================================
-// Global data
-// ============================================================
+// ------------------------------------------------------------
+// Global buffers
+// Allocated in PSRAM
+// ------------------------------------------------------------
 
 Point3D *points = nullptr;
 int *labels = nullptr;
 int *queueBuffer = nullptr;
 
-size_t currentN = 0;
+// ------------------------------------------------------------
+// Deterministic pseudo-random generator
+// ------------------------------------------------------------
 
-// ============================================================
-// Distance squared
-// ============================================================
+uint32_t rngState = 123456789;
 
-inline float distanceSquared(
+uint32_t fastRandom()
+{
+    rngState = rngState * 1664525UL + 1013904223UL;
+    return rngState;
+}
+
+float randomFloat(float minValue, float maxValue)
+{
+    uint32_t value = fastRandom();
+
+    float normalized =
+        (float)(value & 0x00FFFFFF) / 16777215.0f;
+
+    return minValue +
+           normalized * (maxValue - minValue);
+}
+
+// ------------------------------------------------------------
+// Generate deterministic 3D dataset
+//
+// Three compact clusters:
+//
+// Cluster 0 -> around (0, 0, 0)
+// Cluster 1 -> around (5, 5, 5)
+// Cluster 2 -> around (10, 0, 5)
+//
+// Each cluster contains 480 points.
+//
+// The dataset is regenerated before each epsilon test so that
+// every epsilon sees exactly the same dataset.
+// ------------------------------------------------------------
+
+void generateDataset()
+{
+    rngState = 123456789;
+
+    const int pointsPerCluster = DATASET_SIZE / 3;
+
+    for (int i = 0; i < DATASET_SIZE; i++)
+    {
+        int cluster = i / pointsPerCluster;
+
+        float cx;
+        float cy;
+        float cz;
+
+        if (cluster == 0)
+        {
+            cx = 0.0f;
+            cy = 0.0f;
+            cz = 0.0f;
+        }
+        else if (cluster == 1)
+        {
+            cx = 5.0f;
+            cy = 5.0f;
+            cz = 5.0f;
+        }
+        else
+        {
+            cx = 10.0f;
+            cy = 0.0f;
+            cz = 5.0f;
+        }
+
+        // Compact deterministic distribution
+        points[i].x = cx + randomFloat(-0.25f, 0.25f);
+        points[i].y = cy + randomFloat(-0.25f, 0.25f);
+        points[i].z = cz + randomFloat(-0.25f, 0.25f);
+    }
+}
+
+// ------------------------------------------------------------
+// Squared Euclidean distance
+//
+// Avoids sqrt(), which makes the benchmark faster and cleaner.
+// Compare against epsilon^2 instead.
+// ------------------------------------------------------------
+
+inline float squaredDistance(
     const Point3D &a,
     const Point3D &b)
 {
@@ -68,31 +140,24 @@ inline float distanceSquared(
     float dy = a.y - b.y;
     float dz = a.z - b.z;
 
-    return
-        dx * dx +
-        dy * dy +
-        dz * dz;
+    return dx * dx +
+           dy * dy +
+           dz * dz;
 }
 
-// ============================================================
+// ------------------------------------------------------------
 // Count neighbors
-//
-// No allocation.
-// No free.
-// Much safer for embedded systems.
-//
-// ============================================================
+// ------------------------------------------------------------
 
-size_t countNeighbors(size_t pointIndex)
+int countNeighbors(
+    int pointIndex,
+    float epsilonSquared)
 {
-    const float epsilonSquared =
-        EPSILON * EPSILON;
+    int count = 0;
 
-    size_t count = 0;
-
-    for (size_t i = 0; i < currentN; i++)
+    for (int i = 0; i < DATASET_SIZE; i++)
     {
-        if (distanceSquared(
+        if (squaredDistance(
                 points[pointIndex],
                 points[i]) <= epsilonSquared)
         {
@@ -103,197 +168,141 @@ size_t countNeighbors(size_t pointIndex)
     return count;
 }
 
-// ============================================================
-// Put all neighbors into queue
+// ------------------------------------------------------------
+// Add neighbors to queue
 //
-// Only adds currently unclassified points.
-// This prevents duplicate queue entries.
-//
-// ============================================================
+// Only unclassified points are inserted.
+// A point already marked NOISE can be converted into the
+// current cluster during expansion.
+// ------------------------------------------------------------
 
-size_t addNeighborsToQueue(
-    size_t pointIndex,
+int addNeighborsToQueue(
+    int pointIndex,
     int clusterId,
-    size_t queueSize)
+    float epsilonSquared,
+    int queueSize)
 {
-    const float epsilonSquared =
-        EPSILON * EPSILON;
-
-    for (size_t i = 0; i < currentN; i++)
+    for (int i = 0; i < DATASET_SIZE; i++)
     {
-        if (distanceSquared(
+        if (squaredDistance(
                 points[pointIndex],
                 points[i]) <= epsilonSquared)
         {
-            // Already assigned?
-            if (labels[i] != UNCLASSIFIED)
+            if (labels[i] == UNCLASSIFIED)
             {
-                continue;
+                labels[i] = clusterId;
+
+                if (queueSize < DATASET_SIZE)
+                {
+                    queueBuffer[queueSize] = i;
+                    queueSize++;
+                }
             }
-
-            // Safety check
-            if (queueSize >= currentN)
-            {
-                Serial.println(
-                    "ERROR: DBSCAN queue overflow"
-                );
-
-                return queueSize;
-            }
-
-            labels[i] = clusterId;
-
-            queueBuffer[queueSize] = i;
-
-            queueSize++;
         }
     }
 
     return queueSize;
 }
 
-// ============================================================
+// ------------------------------------------------------------
 // Expand cluster
-// ============================================================
+// ------------------------------------------------------------
 
-bool expandCluster(
-    size_t pointIndex,
-    int clusterId)
+void expandCluster(
+    int startPoint,
+    int clusterId,
+    float epsilon,
+    int &queueSize)
 {
-    // --------------------------------------------------------
-    // Check whether initial point is a core point
-    // --------------------------------------------------------
+    float epsilonSquared = epsilon * epsilon;
 
-    size_t neighborCount =
-        countNeighbors(pointIndex);
+    queueSize = 0;
 
-    if (neighborCount < MIN_PTS)
-    {
-        labels[pointIndex] = NOISE;
+    labels[startPoint] = clusterId;
 
-        return true;
-    }
+    queueBuffer[queueSize++] = startPoint;
 
-    // --------------------------------------------------------
-    // Start queue
-    // --------------------------------------------------------
-
-    size_t queueSize = 0;
-    size_t queueIndex = 0;
-
-    labels[pointIndex] = clusterId;
-
-    // Add initial neighbors
-    queueSize =
-        addNeighborsToQueue(
-            pointIndex,
-            clusterId,
-            queueSize
-        );
-
-    // --------------------------------------------------------
-    // Process queue
-    // --------------------------------------------------------
+    int queueIndex = 0;
 
     while (queueIndex < queueSize)
     {
-        size_t currentPoint =
-            queueBuffer[queueIndex];
+        int currentPoint = queueBuffer[queueIndex++];
 
-        queueIndex++;
+        int neighborCount =
+            countNeighbors(
+                currentPoint,
+                epsilonSquared);
 
-        size_t currentNeighborCount =
-            countNeighbors(currentPoint);
-
-        // ----------------------------------------------------
-        // If this point is a core point,
-        // expand the cluster.
-        // ----------------------------------------------------
-
-        if (currentNeighborCount >= MIN_PTS)
+        if (neighborCount >= MIN_PTS)
         {
             queueSize =
                 addNeighborsToQueue(
                     currentPoint,
                     clusterId,
-                    queueSize
-                );
+                    epsilonSquared,
+                    queueSize);
         }
     }
-
-    return true;
 }
 
-// ============================================================
+// ------------------------------------------------------------
 // DBSCAN
-// ============================================================
+// ------------------------------------------------------------
 
-bool dbscan()
+int dbscan(float epsilon)
 {
+    // Reset labels
+    for (int i = 0; i < DATASET_SIZE; i++)
+    {
+        labels[i] = UNCLASSIFIED;
+    }
+
     int clusterId = 0;
 
-    for (size_t i = 0; i < currentN; i++)
+    int queueSize = 0;
+
+    for (int i = 0; i < DATASET_SIZE; i++)
     {
-        // Already processed
         if (labels[i] != UNCLASSIFIED)
         {
             continue;
         }
 
-        // Expand cluster
-        bool success =
-            expandCluster(
+        float epsilonSquared =
+            epsilon * epsilon;
+
+        int neighborCount =
+            countNeighbors(
                 i,
-                clusterId
-            );
+                epsilonSquared);
 
-        if (!success)
+        if (neighborCount < MIN_PTS)
         {
-            return false;
+            labels[i] = NOISE;
+            continue;
         }
 
-        // Determine whether this point
-        // actually created a cluster.
-        //
-        // If it became NOISE, don't increment.
-        if (labels[i] == clusterId)
-        {
-            clusterId++;
-        }
+        clusterId++;
+
+        expandCluster(
+            i,
+            clusterId,
+            epsilon,
+            queueSize);
     }
 
-    return true;
+    return clusterId;
 }
 
-// ============================================================
-// Count clusters
-// ============================================================
-
-int countClusters()
-{
-    int maxCluster = -1;
-
-    for (size_t i = 0; i < currentN; i++)
-    {
-        if (labels[i] >= 0 &&
-            labels[i] > maxCluster)
-        {
-            maxCluster = labels[i];
-        }
-    }
-
-    return maxCluster + 1;
-}
-
-// ============================================================
+// ------------------------------------------------------------
 // Count noise
-// ============================================================
+// ------------------------------------------------------------
 
-size_t countNoise()
+int countNoise()
 {
-    size_t noise = 0;
+    int noise = 0;
 
-    for (size_t i = 0; i < currentN; i++)
+    for (int i = 0; i < DATASET_SIZE; i++)
     {
         if (labels[i] == NOISE)
         {
@@ -304,199 +313,66 @@ size_t countNoise()
     return noise;
 }
 
-// ============================================================
-// Generate deterministic 3D dataset
-// ============================================================
+// ------------------------------------------------------------
+// Memory information
+// ------------------------------------------------------------
 
-void generateDataset(size_t N)
+void printMemoryInfo()
 {
-    for (size_t i = 0; i < N; i++)
-    {
-        float noiseX =
-            ((float)((i * 17) % 100) / 100.0f) - 0.5f;
+    size_t pointsMemory =
+        sizeof(Point3D) * DATASET_SIZE;
 
-        float noiseY =
-            ((float)((i * 31) % 100) / 100.0f) - 0.5f;
-
-        float noiseZ =
-            ((float)((i * 47) % 100) / 100.0f) - 0.5f;
-
-        int cluster =
-            i % 3;
-
-        if (cluster == 0)
-        {
-            points[i].x = noiseX;
-            points[i].y = noiseY;
-            points[i].z = noiseZ;
-        }
-        else if (cluster == 1)
-        {
-            points[i].x = 5.0f + noiseX;
-            points[i].y = 5.0f + noiseY;
-            points[i].z = 5.0f + noiseZ;
-        }
-        else
-        {
-            points[i].x = 10.0f + noiseX;
-            points[i].y = noiseY;
-            points[i].z = 5.0f + noiseZ;
-        }
-
-        labels[i] = UNCLASSIFIED;
-    }
-}
-
-// ============================================================
-// Allocate benchmark memory
-// ============================================================
-
-bool allocateMemory(size_t N)
-{
-    size_t pointMemory =
-        N * sizeof(Point3D);
-
-    size_t labelMemory =
-        N * sizeof(int);
+    size_t labelsMemory =
+        sizeof(int) * DATASET_SIZE;
 
     size_t queueMemory =
-        N * sizeof(int);
-
-    points =
-        (Point3D *)heap_caps_malloc(
-            pointMemory,
-            MALLOC_CAP_SPIRAM
-        );
-
-    labels =
-        (int *)heap_caps_malloc(
-            labelMemory,
-            MALLOC_CAP_SPIRAM
-        );
-
-    queueBuffer =
-        (int *)heap_caps_malloc(
-            queueMemory,
-            MALLOC_CAP_SPIRAM
-        );
-
-    if (points == nullptr ||
-        labels == nullptr ||
-        queueBuffer == nullptr)
-    {
-        Serial.println(
-            "ERROR: PSRAM allocation failed."
-        );
-
-        return false;
-    }
-
-    return true;
-}
-
-// ============================================================
-// Free benchmark memory
-// ============================================================
-
-void freeMemory()
-{
-    if (points != nullptr)
-    {
-        heap_caps_free(points);
-        points = nullptr;
-    }
-
-    if (labels != nullptr)
-    {
-        heap_caps_free(labels);
-        labels = nullptr;
-    }
-
-    if (queueBuffer != nullptr)
-    {
-        heap_caps_free(queueBuffer);
-        queueBuffer = nullptr;
-    }
-
-    currentN = 0;
-}
-
-// ============================================================
-// Run benchmark
-// ============================================================
-
-bool runBenchmark(size_t N)
-{
-    currentN = N;
-
-    Serial.println();
-    Serial.println(
-        "--------------------------------------------------------"
-    );
-
-    Serial.printf(
-        "Testing N = %u\n",
-        (unsigned)N
-    );
-
-    // --------------------------------------------------------
-    // Allocate
-    // --------------------------------------------------------
-
-    if (!allocateMemory(N))
-    {
-        freeMemory();
-
-        return false;
-    }
-
-    size_t pointMemory =
-        N * sizeof(Point3D);
-
-    size_t labelMemory =
-        N * sizeof(int);
-
-    size_t queueMemory =
-        N * sizeof(int);
+        sizeof(int) * DATASET_SIZE;
 
     size_t totalMemory =
-        pointMemory +
-        labelMemory +
+        pointsMemory +
+        labelsMemory +
         queueMemory;
 
+    Serial.println();
+    Serial.println("Memory:");
     Serial.printf(
-        "Points memory: %.2f KB\n",
-        pointMemory / 1024.0f
-    );
-
-    Serial.printf(
-        "Labels memory: %.2f KB\n",
-        labelMemory / 1024.0f
-    );
+        "  Points: %.2f KB\n",
+        pointsMemory / 1024.0f);
 
     Serial.printf(
-        "Queue memory:  %.2f KB\n",
-        queueMemory / 1024.0f
-    );
+        "  Labels: %.2f KB\n",
+        labelsMemory / 1024.0f);
 
     Serial.printf(
-        "Total PSRAM:   %.2f KB\n",
-        totalMemory / 1024.0f
-    );
+        "  Queue: %.2f KB\n",
+        queueMemory / 1024.0f);
 
-    // --------------------------------------------------------
-    // Generate dataset
-    // --------------------------------------------------------
+    Serial.printf(
+        "  Total PSRAM: %.2f KB\n",
+        totalMemory / 1024.0f);
+}
 
-    generateDataset(N);
+// ------------------------------------------------------------
+// Run one epsilon experiment
+// ------------------------------------------------------------
 
-    Serial.println(
-        "Dataset generated."
-    );
+void runExperiment(float epsilon)
+{
+    Serial.println();
+    Serial.println("========================================");
+    Serial.printf(
+        "EPSILON = %.2f\n",
+        epsilon);
+    Serial.println("========================================");
 
-    // --------------------------------------------------------
-    // Memory before
-    // --------------------------------------------------------
+    // Always use exactly the same dataset
+    generateDataset();
+
+    // Reset labels
+    for (int i = 0; i < DATASET_SIZE; i++)
+    {
+        labels[i] = UNCLASSIFIED;
+    }
 
     size_t freeHeapBefore =
         ESP.getFreeHeap();
@@ -504,55 +380,20 @@ bool runBenchmark(size_t N)
     size_t freePsramBefore =
         ESP.getFreePsram();
 
-    Serial.printf(
-        "Free heap before:  %u KB\n",
-        (unsigned)(freeHeapBefore / 1024)
-    );
-
-    Serial.printf(
-        "Free PSRAM before: %u KB\n",
-        (unsigned)(freePsramBefore / 1024)
-    );
-
-    // --------------------------------------------------------
-    // Run DBSCAN
-    // --------------------------------------------------------
-
-    unsigned long startTime =
+    uint64_t startTime =
         micros();
 
-    bool success =
-        dbscan();
+    int clusterCount =
+        dbscan(epsilon);
 
-    unsigned long endTime =
+    uint64_t endTime =
         micros();
 
-    if (!success)
-    {
-        Serial.println(
-            "DBSCAN FAILED."
-        );
-
-        freeMemory();
-
-        return false;
-    }
-
-    unsigned long elapsedUs =
-        endTime - startTime;
-
-    float elapsedMs =
-        elapsedUs / 1000.0f;
-
-    // --------------------------------------------------------
-    // Results
-    // --------------------------------------------------------
-
-    int clusters =
-        countClusters();
-
-    size_t noise =
+    int noiseCount =
         countNoise();
+
+    uint64_t executionTime =
+        endTime - startTime;
 
     size_t freeHeapAfter =
         ESP.getFreeHeap();
@@ -560,72 +401,38 @@ bool runBenchmark(size_t N)
     size_t freePsramAfter =
         ESP.getFreePsram();
 
-    Serial.println();
-    Serial.println(
-        "                    RESULTS"
-    );
+    Serial.printf(
+        "Execution time: %.3f ms\n",
+        executionTime / 1000.0);
 
     Serial.printf(
-        "N:              %u\n",
-        (unsigned)N
-    );
+        "Clusters: %d\n",
+        clusterCount);
 
     Serial.printf(
-        "Dimensions:     %d\n",
-        DIMENSIONS
-    );
+        "Noise points: %d\n",
+        noiseCount);
 
     Serial.printf(
-        "Epsilon:        %.2f\n",
-        EPSILON
-    );
+        "Free heap before: %u KB\n",
+        (unsigned int)(freeHeapBefore / 1024));
 
     Serial.printf(
-        "MinPts:         %d\n",
-        MIN_PTS
-    );
+        "Free heap after: %u KB\n",
+        (unsigned int)(freeHeapAfter / 1024));
 
     Serial.printf(
-        "Clusters:       %d\n",
-        clusters
-    );
+        "Free PSRAM before: %u KB\n",
+        (unsigned int)(freePsramBefore / 1024));
 
     Serial.printf(
-        "Noise points:   %u\n",
-        (unsigned)noise
-    );
-
-    Serial.printf(
-        "Execution:      %.3f ms\n",
-        elapsedMs
-    );
-
-    Serial.printf(
-        "Free heap:      %u KB\n",
-        (unsigned)(freeHeapAfter / 1024)
-    );
-
-    Serial.printf(
-        "Free PSRAM:     %u KB\n",
-        (unsigned)(freePsramAfter / 1024)
-    );
-
-    Serial.println(
-        "--------------------------------------------------------"
-    );
-
-    // --------------------------------------------------------
-    // Free
-    // --------------------------------------------------------
-
-    freeMemory();
-
-    return true;
+        "Free PSRAM after: %u KB\n",
+        (unsigned int)(freePsramAfter / 1024));
 }
 
-// ============================================================
+// ------------------------------------------------------------
 // Setup
-// ============================================================
+// ------------------------------------------------------------
 
 void setup()
 {
@@ -634,134 +441,110 @@ void setup()
     delay(2000);
 
     Serial.println();
-    Serial.println(
-        "========================================================"
-    );
-    Serial.println(
-        "       ESP32-S3 N16R8 - DBSCAN BENCHMARK"
-    );
-    Serial.println(
-        "========================================================"
-    );
-
-    Serial.println();
-
-    // --------------------------------------------------------
-    // Hardware
-    // --------------------------------------------------------
-
-    Serial.println(
-        "[ HARDWARE ]"
-    );
+    Serial.println("========================================");
+    Serial.println("DBSCAN - EXPERIMENT 02");
+    Serial.println("EPSILON SENSITIVITY");
+    Serial.println("ESP32-S3 N16R8");
+    Serial.println("========================================");
 
     Serial.printf(
-        "CPU: ESP32-S3\n"
-    );
-
-    Serial.printf(
-        "CPU frequency: %lu MHz\n",
-        ESP.getCpuFreqMHz()
-    );
-
-    Serial.printf(
-        "Flash: %u MB\n",
-        ESP.getFlashChipSize() /
-        (1024 * 1024)
-    );
-
-    Serial.printf(
-        "PSRAM: %u MB\n",
-        ESP.getPsramSize() /
-        (1024 * 1024)
-    );
-
-    Serial.printf(
-        "Free internal heap: %u KB\n",
-        ESP.getFreeHeap() / 1024
-    );
-
-    Serial.printf(
-        "Free PSRAM: %u KB\n",
-        ESP.getFreePsram() / 1024
-    );
-
-    Serial.println();
-
-    // --------------------------------------------------------
-    // Configuration
-    // --------------------------------------------------------
-
-    Serial.println(
-        "[ DBSCAN CONFIGURATION ]"
-    );
+        "Dataset size: %d\n",
+        DATASET_SIZE);
 
     Serial.printf(
         "Dimensions: %d\n",
-        DIMENSIONS
-    );
-
-    Serial.printf(
-        "Epsilon: %.2f\n",
-        EPSILON
-    );
+        DIMENSIONS);
 
     Serial.printf(
         "MinPts: %d\n",
-        MIN_PTS
-    );
+        MIN_PTS);
+
+    Serial.printf(
+        "Free heap: %u KB\n",
+        (unsigned int)(ESP.getFreeHeap() / 1024));
+
+    Serial.printf(
+        "Free PSRAM: %u KB\n",
+        (unsigned int)(ESP.getFreePsram() / 1024));
+
+    // --------------------------------------------------------
+    // Allocate buffers in PSRAM
+    // --------------------------------------------------------
+
+    points = (Point3D *)ps_malloc(
+        sizeof(Point3D) * DATASET_SIZE);
+
+    labels = (int *)ps_malloc(
+        sizeof(int) * DATASET_SIZE);
+
+    queueBuffer = (int *)ps_malloc(
+        sizeof(int) * DATASET_SIZE);
+
+    if (points == nullptr ||
+        labels == nullptr ||
+        queueBuffer == nullptr)
+    {
+        Serial.println();
+        Serial.println("ERROR: PSRAM allocation failed!");
+
+        while (true)
+        {
+            delay(1000);
+        }
+    }
 
     Serial.println();
+    Serial.println("PSRAM allocation successful.");
+
+    printMemoryInfo();
 
     // --------------------------------------------------------
-    // Benchmark
+    // Epsilon experiments
     // --------------------------------------------------------
 
-    Serial.println(
-        "[ STARTING BENCHMARK ]"
-    );
-
-    for (int i = 0;
-         i < NUM_TESTS;
-         i++)
+    const float epsilonValues[] =
     {
-        bool success =
-            runBenchmark(
-                TEST_SIZES[i]
-            );
+        0.10f,
+        0.20f,
+        0.30f,
+        0.50f,
+        0.80f,
+        1.00f,
+        1.50f
+    };
 
-        if (!success)
-        {
-            Serial.println();
-            Serial.println(
-                "Benchmark stopped."
-            );
+    const int epsilonCount =
+        sizeof(epsilonValues) /
+        sizeof(epsilonValues[0]);
 
-            break;
-        }
+    Serial.println();
+    Serial.println("========================================");
+    Serial.println("STARTING EPSILON EXPERIMENTS");
+    Serial.println("========================================");
+
+    for (int i = 0; i < epsilonCount; i++)
+    {
+        runExperiment(
+            epsilonValues[i]);
 
         delay(500);
     }
 
     // --------------------------------------------------------
-    // Complete
+    // Final summary
     // --------------------------------------------------------
 
     Serial.println();
-    Serial.println(
-        "========================================================"
-    );
-    Serial.println(
-        "              BENCHMARK COMPLETE"
-    );
-    Serial.println(
-        "========================================================"
-    );
+    Serial.println("========================================");
+    Serial.println("EXPERIMENT 02 COMPLETE");
+    Serial.println("========================================");
 }
 
-// ============================================================
+// ------------------------------------------------------------
 // Loop
-// ============================================================
+// ------------------------------------------------------------
 
 void loop()
 {
+    delay(1000);
 }
