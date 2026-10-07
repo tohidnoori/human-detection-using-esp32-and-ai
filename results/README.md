@@ -4,30 +4,31 @@ Performance analysis and optimization of the DBSCAN clustering algorithm on an *
 
 The project evaluates DBSCAN from several perspectives:
 
-* Dataset-size scaling
-* Epsilon sensitivity
-* MinPts sensitivity
-* Dataset-density sensitivity
-* Baseline vs. spatially optimized DBSCAN
-* Memory consumption
-* Execution-time behavior
-* Correctness preservation
+- Dataset-size scaling
+- Epsilon sensitivity
+- MinPts sensitivity
+- Dataset-density sensitivity
+- Baseline vs. spatially optimized DBSCAN
+- Dual-core parallelization strategies
+- Memory consumption
+- Execution-time behavior
+- Correctness preservation
 
 ---
 
 ## Hardware
 
-| Component          | Specification |
-| ------------------ | ------------- |
-| MCU                | ESP32-S3      |
-| CPU                | Dual-core     |
-| CPU Frequency      | 240 MHz       |
-| Flash              | 16 MB         |
-| PSRAM              | 8 MB          |
-| Internal Free Heap | ~363 KB       |
-| Free PSRAM         | ~8 MB         |
-| Framework          | Arduino       |
-| Build System       | PlatformIO    |
+| Component | Specification |
+|---|---|
+| MCU | ESP32-S3 |
+| CPU | Dual-core |
+| CPU Frequency | 240 MHz |
+| Flash | 16 MB |
+| PSRAM | 8 MB |
+| Internal Free Heap | ~363 KB |
+| Free PSRAM | ~8 MB |
+| Framework | Arduino |
+| Build System | PlatformIO |
 
 ---
 
@@ -38,12 +39,12 @@ esp32-s3-final-project-phase-1/
 │
 ├── README.md
 │
-├── 
-│   ├── README_01_Baseline_Scaling.md
-│   ├── README_02_Epsilon_Sensitivity.md
-│   ├── README_03_MinPts_Sensitivity.md
-│   ├── README_04_Density_Sensitivity.md
-│   └── README_05_Baseline_vs_Optimized.md
+├── README_01_Baseline_Scaling.md
+├── README_02_Epsilon_Sensitivity.md
+├── README_03_MinPts_Sensitivity.md
+├── README_04_Density_Sensitivity.md
+├── README_05_Baseline_vs_Optimized.md
+├── README_06_Dual_Core_Experiments.md
 │
 ├── src/
 │   └── main.cpp
@@ -75,10 +76,10 @@ The number of points is increased from:
 
 The experiment demonstrates:
 
-* Approximately `O(N²)` execution-time scaling
-* `O(N)` primary memory scaling
-* Computational limitation before PSRAM exhaustion
-* Baseline DBSCAN performance on the ESP32-S3
+- Approximately `O(N²)` execution-time scaling
+- `O(N)` primary memory scaling
+- Computational limitation before PSRAM exhaustion
+- Baseline DBSCAN performance on the ESP32-S3
 
 [Read Experiment 01 →](README_01_Baseline_Scaling.md)
 
@@ -99,11 +100,11 @@ Epsilon = 0.10 – 1.50
 
 The experiment investigates:
 
-* Cluster formation
-* Noise points
-* Execution time
-* Memory consumption
-* Effect of epsilon on brute-force DBSCAN
+- Cluster formation
+- Noise points
+- Execution time
+- Memory consumption
+- Effect of epsilon on brute-force DBSCAN
 
 [Read Experiment 02 →](README_02_Epsilon_Sensitivity.md)
 
@@ -119,19 +120,18 @@ Configuration:
 N = 1,440
 Dimensions = 3
 Epsilon = 0.20
-
 MinPts:
 2, 5, 10, 20, 50, 100, 200
 ```
 
 The experiment measures:
 
-* Core points
-* Border points
-* Noise points
-* Number of clusters
-* Execution time
-* Memory usage
+- Core points
+- Border points
+- Noise points
+- Number of clusters
+- Execution time
+- Memory usage
 
 [Read Experiment 03 →](README_03_MinPts_Sensitivity.md)
 
@@ -160,10 +160,10 @@ Sparse  → radius = 1.20
 
 The experiment investigates how density affects:
 
-* Cluster formation
-* Core/border/noise classification
-* Execution time
-* Memory usage
+- Cluster formation
+- Core/border/noise classification
+- Execution time
+- Memory usage
 
 [Read Experiment 04 →](README_04_Density_Sensitivity.md)
 
@@ -171,9 +171,9 @@ The experiment investigates how density affects:
 
 ## Experiment 05 — Baseline vs Optimized DBSCAN
 
-The final experiment compares the original brute-force implementation with a **uniform spatial-grid implementation**.
+The final single-core optimization experiment compares the original brute-force implementation with a **uniform spatial-grid implementation**.
 
-The optimized version limits neighborhood searches to the point's own grid cell and its 26 neighboring cells.
+The optimized version limits neighborhood searches to the point's own grid cell and its 26 neighboring cells, while still performing exact squared-distance checks.
 
 Three benchmark categories are used:
 
@@ -199,9 +199,7 @@ The optimization achieved:
 
 ```text
 Maximum total speedup: 21.48×
-
 Speedup at N=1440: 14.75×
-
 Memory: 69.88 KB
 
 Correctness:
@@ -209,6 +207,42 @@ All 13 benchmark configurations matched the baseline
 ```
 
 [Read Experiment 05 →](README_05_Baseline_vs_Optimized.md)
+
+---
+
+## Experiment 06 — Dual-Core DBSCAN
+
+After the spatial-grid optimization, the project investigates whether the ESP32-S3's two CPU cores can provide additional acceleration.
+
+Four dual-core strategies are evaluated:
+
+```text
+Experiment A → Coarse-grained core-point detection
+Experiment B → Fine-grained neighborhood search
+Experiment C → Spatial Grid + dual-core core detection
+Experiment D → Parallel cluster expansion
+```
+
+The experiments compare single-core and dual-core execution using deterministic 3D datasets with:
+
+```text
+N = 180, 360, 720, 1080, 1440
+ε = 0.20
+MinPts = 5
+```
+
+The dual-core study focuses on:
+
+- Speedup and execution-time improvement
+- Synchronization overhead
+- Workload partitioning
+- Correctness preservation
+- The effect of Amdahl's Law
+- The most effective DBSCAN phase to parallelize on an embedded dual-core MCU
+
+The main finding is that **parallelizing cluster expansion is more effective than parallelizing core detection or performing very fine-grained per-query parallelism**. At `N = 1440`, Experiment D achieved `1.05×` speedup for cluster expansion and `1.03×` end-to-end speedup, while all tested A–D configurations preserved identical DBSCAN labels.
+
+[Read Experiment 06 — Dual-Core Experiments →](README_06_Dual_Core_Experiments.md)
 
 ---
 
@@ -267,10 +301,10 @@ Therefore, the baseline implementation is primarily:
 
 The experiments show that:
 
-* `ε` strongly affects neighborhood structure and clustering behavior.
-* `MinPts` strongly controls the density requirement.
-* Dataset density significantly affects practical execution time.
-* Memory is primarily determined by `N`, not by epsilon or density.
+- `ε` strongly affects neighborhood structure and clustering behavior.
+- `MinPts` strongly controls the density requirement.
+- Dataset density significantly affects practical execution time.
+- Memory is primarily determined by `N`, not by epsilon or density.
 
 ---
 
@@ -314,6 +348,23 @@ All 13 optimized benchmark configurations produced identical results to the base
 
 ---
 
+### Dual-core optimization
+
+The A–D experiments show that adding a second CPU core does not automatically improve DBSCAN performance.
+
+The main conclusions are:
+
+- Coarse-grained core detection provides only about `1.00–1.01×` speedup.
+- Fine-grained neighborhood parallelism is slower because synchronization overhead dominates.
+- Spatial Grid + dual-core core detection also provides approximately `1.00×` speedup.
+- Parallel cluster expansion is the most promising dual-core strategy, reaching `1.05×` expansion speedup and `1.03×` end-to-end speedup at `N = 1440`.
+
+Therefore, **algorithmic optimization through spatial indexing remains much more important than naive parallelization**, while dual-core execution is best treated as a second-stage optimization after reducing unnecessary neighborhood searches.
+
+[See the complete A–D analysis →](README_06_Dual_Core_Experiments.md)
+
+---
+
 # Final Conclusion
 
 The experiments establish a complete performance baseline for DBSCAN on the ESP32-S3 and demonstrate that spatial indexing can provide substantial practical performance improvements without requiring an `N × N` distance matrix.
@@ -322,16 +373,31 @@ The baseline implementation is limited primarily by quadratic neighborhood searc
 
 The optimized spatial-grid implementation significantly reduces unnecessary distance calculations while preserving the same clustering results.
 
-Therefore, for larger datasets on resource-constrained embedded hardware, spatial indexing provides a practical and effective optimization for DBSCAN.
+The dual-core experiments further show that **where parallelism is introduced matters more than simply using both CPU cores**. The best tested dual-core design parallelizes cluster expansion on top of the spatial-grid implementation, but the overall gain remains modest because grid construction, core detection, synchronization, and other serial phases still limit total speedup.
+
+Therefore, for larger datasets on resource-constrained embedded hardware, the recommended architecture is:
+
+```text
+3D DBSCAN
+    ↓
+Spatial Grid
+    ↓
+Parallel Cluster Expansion
+    ↓
+ESP32-S3 Core 0 + Core 1
+```
+
+This design preserves exact clustering results while providing the best measured dual-core performance among the tested approaches.
 
 ---
 
 ## Detailed Reports
 
-| Experiment | Report                                                           |
-| ---------- | ---------------------------------------------------------------- |
-| 01         | [Baseline Scaling](README_01_Baseline_Scaling.md)           |
-| 02         | [Epsilon Sensitivity](README_02_Epsilon_Sensitivity.md)     |
-| 03         | [MinPts Sensitivity](README_03_MinPts_Sensitivity.md)       |
-| 04         | [Density Sensitivity](README_04_Density_Sensitivity.md)     |
-| 05         | [Baseline vs Optimized](README_05_Baseline_vs_Optimized.md) |
+| Experiment | Report |
+|---|---|
+| 01 | [Baseline Scaling](README_01_Baseline_Scaling.md) |
+| 02 | [Epsilon Sensitivity](README_02_Epsilon_Sensitivity.md) |
+| 03 | [MinPts Sensitivity](README_03_MinPts_Sensitivity.md) |
+| 04 | [Density Sensitivity](README_04_Density_Sensitivity.md) |
+| 05 | [Baseline vs Optimized](README_05_Baseline_vs_Optimized.md) |
+| 06 | [Dual-Core Experiments A–D](README_06_Dual_Core_Experiments.md) |
