@@ -365,6 +365,22 @@ Therefore, **algorithmic optimization through spatial indexing remains much more
 
 ---
 
+## Real-Time Three-Sensor Pipeline
+
+This experiment evaluates a realistic three-sensor 3D human-detection pipeline using simulated sensor observations, coordinate fusion, spatial-grid DBSCAN, and human-like cluster analysis.
+
+At a target of 10 FPS, the corrected simulation sustains:
+
+- 660 points/frame
+- 6,600 points/s input rate
+- 89.357 ms average pipeline time
+- 96.496 ms maximum measured pipeline time
+- stable detection of 2 simulated humans
+
+The first tested failing configuration was 684 points/frame, where the maximum pipeline time reached 101.247 ms.
+
+[Read Experiment 07B →](README_07_Realtime_Sensor_Pipeline.md)
+
 # Final Conclusion
 
 The experiments establish a complete performance baseline for DBSCAN on the ESP32-S3 and demonstrate that spatial indexing can provide substantial practical performance improvements without requiring an `N × N` distance matrix.
