@@ -1,35 +1,51 @@
 #include <Arduino.h>
+#include <esp_heap_caps.h>
 #include <math.h>
 
 // ============================================================
-// Experiment 02 - DBSCAN Epsilon Sensitivity
-// ESP32-S3 N16R8
+// EXPERIMENT 05
+// Baseline DBSCAN vs Memory-Efficient Optimized DBSCAN
 //
-// Fixed:
-//   N       = 1440
-//   DIM     = 3
-//   MinPts  = 5
+// Baseline:
+//   Brute-force neighborhood search.
+//   Every neighborhood query scans all N points.
 //
-// Variable:
-//   Epsilon = 0.10, 0.20, 0.30, 0.50,
-//             0.80, 1.00, 1.50
+// Optimized:
+//   Uniform spatial grid.
+//   Only neighboring grid cells are searched.
 //
-// Purpose:
-//   Analyze how epsilon affects DBSCAN clustering,
-//   noise points, number of clusters and execution time.
+// Experiments:
+//   A) Scaling with N
+//   B) Epsilon sensitivity
+//   C) MinPts sensitivity
+//
+// The same deterministic dataset is used for both algorithms.
+//
+// Important:
+//   The optimized implementation must produce the same DBSCAN
+//   classification as the baseline implementation.
 // ============================================================
 
-#define DIMENSIONS 3
-#define DATASET_SIZE 1440
-#define MIN_PTS 5
 
-// Labels
-#define UNCLASSIFIED 0
-#define NOISE        -1
+// ============================================================
+// CONSTANTS
+// ============================================================
 
-// ------------------------------------------------------------
-// Point structure
-// ------------------------------------------------------------
+const int MAX_N = 1440;
+
+const int DIMENSIONS = 3;
+
+const int UNCLASSIFIED = -1;
+const int NOISE = -2;
+
+// Maximum number of hash buckets.
+// This is NOT an N x N matrix.
+const int GRID_BUCKETS = 2048;
+
+
+// ============================================================
+// POINT
+// ============================================================
 
 struct Point3D
 {
@@ -38,128 +54,221 @@ struct Point3D
     float z;
 };
 
+
+// ============================================================
+// GLOBAL DATA
+// ============================================================
+
+Point3D* points = nullptr;
+
+
 // ------------------------------------------------------------
-// Global buffers
-// Allocated in PSRAM
+// Baseline
 // ------------------------------------------------------------
 
-Point3D *points = nullptr;
-int *labels = nullptr;
-int *queueBuffer = nullptr;
+int* baselineLabels = nullptr;
+int* baselineQueue = nullptr;
+
 
 // ------------------------------------------------------------
-// Deterministic pseudo-random generator
+// Optimized
 // ------------------------------------------------------------
 
-uint32_t rngState = 123456789;
+int* optimizedLabels = nullptr;
+int* optimizedQueue = nullptr;
 
-uint32_t fastRandom()
+
+// ============================================================
+// SPATIAL GRID
+// ============================================================
+//
+// Each point belongs to one grid cell.
+//
+// Cell size = epsilon.
+//
+// Therefore any point within epsilon distance must be located
+// either in the same cell or one of the 26 neighboring cells.
+//
+// We use a hash table:
+//
+// bucket -> linked list of points
+//
+// This avoids allocating an enormous N x N matrix.
+// ============================================================
+
+int* gridHead = nullptr;
+int* gridNext = nullptr;
+
+int* cellX = nullptr;
+int* cellY = nullptr;
+int* cellZ = nullptr;
+
+
+// ============================================================
+// DATASET CONFIGURATION
+// ============================================================
+
+float currentEpsilon = 0.20f;
+float currentEpsilonSquared = 0.20f * 0.20f;
+
+int currentMinPts = 5;
+
+float datasetRadius = 0.60f;
+
+
+// ============================================================
+// RANDOM GENERATOR
+// ============================================================
+
+uint32_t randomState = 123456789;
+
+
+uint32_t nextRandom()
 {
-    rngState = rngState * 1664525UL + 1013904223UL;
-    return rngState;
+    randomState =
+        randomState * 1664525UL +
+        1013904223UL;
+
+    return randomState;
 }
 
-float randomFloat(float minValue, float maxValue)
+
+float randomFloat(
+    float minValue,
+    float maxValue
+)
 {
-    uint32_t value = fastRandom();
+    uint32_t value = nextRandom();
 
     float normalized =
-        (float)(value & 0x00FFFFFF) / 16777215.0f;
+        (float)value / 4294967295.0f;
 
     return minValue +
-           normalized * (maxValue - minValue);
+           normalized *
+           (maxValue - minValue);
 }
 
-// ------------------------------------------------------------
-// Generate deterministic 3D dataset
-//
-// Three compact clusters:
-//
-// Cluster 0 -> around (0, 0, 0)
-// Cluster 1 -> around (5, 5, 5)
-// Cluster 2 -> around (10, 0, 5)
-//
-// Each cluster contains 480 points.
-//
-// The dataset is regenerated before each epsilon test so that
-// every epsilon sees exactly the same dataset.
-// ------------------------------------------------------------
 
-void generateDataset()
-{
-    rngState = 123456789;
-
-    const int pointsPerCluster = DATASET_SIZE / 3;
-
-    for (int i = 0; i < DATASET_SIZE; i++)
-    {
-        int cluster = i / pointsPerCluster;
-
-        float cx;
-        float cy;
-        float cz;
-
-        if (cluster == 0)
-        {
-            cx = 0.0f;
-            cy = 0.0f;
-            cz = 0.0f;
-        }
-        else if (cluster == 1)
-        {
-            cx = 5.0f;
-            cy = 5.0f;
-            cz = 5.0f;
-        }
-        else
-        {
-            cx = 10.0f;
-            cy = 0.0f;
-            cz = 5.0f;
-        }
-
-        // Compact deterministic distribution
-        points[i].x = cx + randomFloat(-0.25f, 0.25f);
-        points[i].y = cy + randomFloat(-0.25f, 0.25f);
-        points[i].z = cz + randomFloat(-0.25f, 0.25f);
-    }
-}
-
-// ------------------------------------------------------------
-// Squared Euclidean distance
-//
-// Avoids sqrt(), which makes the benchmark faster and cleaner.
-// Compare against epsilon^2 instead.
-// ------------------------------------------------------------
+// ============================================================
+// DISTANCE
+// ============================================================
 
 inline float squaredDistance(
-    const Point3D &a,
-    const Point3D &b)
+    const Point3D& a,
+    const Point3D& b
+)
 {
     float dx = a.x - b.x;
     float dy = a.y - b.y;
     float dz = a.z - b.z;
 
-    return dx * dx +
-           dy * dy +
-           dz * dz;
+    return
+        dx * dx +
+        dy * dy +
+        dz * dz;
 }
+
+
+// ============================================================
+// DATASET GENERATION
+// ============================================================
+//
+// Three clusters:
+//
+// C1 = (0, 0, 0)
+// C2 = (5, 5, 5)
+// C3 = (10, 0, 5)
+//
+// The random sequence is reset for every experiment.
+//
+// Therefore datasets are deterministic and reproducible.
+// ============================================================
+
+void generateDataset(int N)
+{
+    randomState = 123456789;
+
+    int pointsPerCluster = N / 3;
+
+    for (int i = 0; i < N; i++)
+    {
+        int cluster =
+            i / pointsPerCluster;
+
+        float centerX;
+        float centerY;
+        float centerZ;
+
+        if (cluster == 0)
+        {
+            centerX = 0.0f;
+            centerY = 0.0f;
+            centerZ = 0.0f;
+        }
+        else if (cluster == 1)
+        {
+            centerX = 5.0f;
+            centerY = 5.0f;
+            centerZ = 5.0f;
+        }
+        else
+        {
+            centerX = 10.0f;
+            centerY = 0.0f;
+            centerZ = 5.0f;
+        }
+
+        points[i].x =
+            centerX +
+            randomFloat(
+                -datasetRadius,
+                datasetRadius
+            );
+
+        points[i].y =
+            centerY +
+            randomFloat(
+                -datasetRadius,
+                datasetRadius
+            );
+
+        points[i].z =
+            centerZ +
+            randomFloat(
+                -datasetRadius,
+                datasetRadius
+            );
+    }
+}
+
+
+// ============================================================
+// BASELINE DBSCAN
+// ============================================================
+
 
 // ------------------------------------------------------------
 // Count neighbors
 // ------------------------------------------------------------
 
-int countNeighbors(
+int baselineCountNeighbors(
     int pointIndex,
-    float epsilonSquared)
+    int N
+)
 {
     int count = 0;
 
-    for (int i = 0; i < DATASET_SIZE; i++)
+    for (int i = 0; i < N; i++)
     {
-        if (squaredDistance(
+        if (i == pointIndex)
+            continue;
+
+        if (
+            squaredDistance(
                 points[pointIndex],
-                points[i]) <= epsilonSquared)
+                points[i]
+            ) <= currentEpsilonSquared
+        )
         {
             count++;
         }
@@ -168,33 +277,42 @@ int countNeighbors(
     return count;
 }
 
+
 // ------------------------------------------------------------
-// Add neighbors to queue
-//
-// Only unclassified points are inserted.
-// A point already marked NOISE can be converted into the
-// current cluster during expansion.
+// Add neighbors
 // ------------------------------------------------------------
 
-int addNeighborsToQueue(
+int baselineAddNeighbors(
     int pointIndex,
-    int clusterId,
-    float epsilonSquared,
-    int queueSize)
+    int queueSize,
+    int N
+)
 {
-    for (int i = 0; i < DATASET_SIZE; i++)
+    for (int i = 0; i < N; i++)
     {
-        if (squaredDistance(
-                points[pointIndex],
-                points[i]) <= epsilonSquared)
-        {
-            if (labels[i] == UNCLASSIFIED)
-            {
-                labels[i] = clusterId;
+        if (i == pointIndex)
+            continue;
 
-                if (queueSize < DATASET_SIZE)
+        if (
+            squaredDistance(
+                points[pointIndex],
+                points[i]
+            ) <= currentEpsilonSquared
+        )
+        {
+            if (
+                baselineLabels[i] ==
+                UNCLASSIFIED
+            )
+            {
+                baselineLabels[i] = 0;
+
+                if (queueSize < N)
                 {
-                    queueBuffer[queueSize] = i;
+                    baselineQueue[
+                        queueSize
+                    ] = i;
+
                     queueSize++;
                 }
             }
@@ -204,235 +322,1076 @@ int addNeighborsToQueue(
     return queueSize;
 }
 
+
 // ------------------------------------------------------------
 // Expand cluster
 // ------------------------------------------------------------
 
-void expandCluster(
-    int startPoint,
+void baselineExpandCluster(
+    int pointIndex,
     int clusterId,
-    float epsilon,
-    int &queueSize)
+    int N
+)
 {
-    float epsilonSquared = epsilon * epsilon;
+    int queueSize = 0;
 
-    queueSize = 0;
+    queueSize =
+        baselineAddNeighbors(
+            pointIndex,
+            queueSize,
+            N
+        );
 
-    labels[startPoint] = clusterId;
-
-    queueBuffer[queueSize++] = startPoint;
+    baselineLabels[pointIndex] =
+        clusterId;
 
     int queueIndex = 0;
 
     while (queueIndex < queueSize)
     {
-        int currentPoint = queueBuffer[queueIndex++];
+        int currentPoint =
+            baselineQueue[
+                queueIndex
+            ];
 
-        int neighborCount =
-            countNeighbors(
+        queueIndex++;
+
+        if (
+            baselineLabels[
+                currentPoint
+            ] == NOISE
+        )
+        {
+            baselineLabels[
+                currentPoint
+            ] = clusterId;
+        }
+
+        if (
+            baselineLabels[
+                currentPoint
+            ] != 0
+        )
+        {
+            continue;
+        }
+
+        baselineLabels[
+            currentPoint
+        ] = clusterId;
+
+        int neighbors =
+            baselineCountNeighbors(
                 currentPoint,
-                epsilonSquared);
+                N
+            );
 
-        if (neighborCount >= MIN_PTS)
+        if (neighbors >= currentMinPts)
         {
             queueSize =
-                addNeighborsToQueue(
+                baselineAddNeighbors(
                     currentPoint,
-                    clusterId,
-                    epsilonSquared,
-                    queueSize);
+                    queueSize,
+                    N
+                );
         }
     }
 }
 
+
 // ------------------------------------------------------------
-// DBSCAN
+// Baseline DBSCAN
 // ------------------------------------------------------------
 
-int dbscan(float epsilon)
+int runBaseline(
+    int N
+)
 {
-    // Reset labels
-    for (int i = 0; i < DATASET_SIZE; i++)
+    for (int i = 0; i < N; i++)
     {
-        labels[i] = UNCLASSIFIED;
+        baselineLabels[i] =
+            UNCLASSIFIED;
     }
 
     int clusterId = 0;
 
-    int queueSize = 0;
-
-    for (int i = 0; i < DATASET_SIZE; i++)
+    for (int i = 0; i < N; i++)
     {
-        if (labels[i] != UNCLASSIFIED)
+        if (
+            baselineLabels[i] !=
+            UNCLASSIFIED
+        )
         {
             continue;
         }
 
-        float epsilonSquared =
-            epsilon * epsilon;
-
-        int neighborCount =
-            countNeighbors(
+        int neighbors =
+            baselineCountNeighbors(
                 i,
-                epsilonSquared);
+                N
+            );
 
-        if (neighborCount < MIN_PTS)
+        if (neighbors < currentMinPts)
         {
-            labels[i] = NOISE;
-            continue;
+            baselineLabels[i] =
+                NOISE;
         }
+        else
+        {
+            clusterId++;
 
-        clusterId++;
-
-        expandCluster(
-            i,
-            clusterId,
-            epsilon,
-            queueSize);
+            baselineExpandCluster(
+                i,
+                clusterId,
+                N
+            );
+        }
     }
 
     return clusterId;
 }
 
+
+// ============================================================
+// SPATIAL GRID
+// ============================================================
+
+
 // ------------------------------------------------------------
-// Count noise
+// Convert coordinate to cell coordinate
 // ------------------------------------------------------------
 
-int countNoise()
+inline int getCellCoordinate(
+    float value
+)
 {
-    int noise = 0;
+    return (int)floor(
+        value / currentEpsilon
+    );
+}
 
-    for (int i = 0; i < DATASET_SIZE; i++)
+
+// ------------------------------------------------------------
+// Hash cell coordinate
+// ------------------------------------------------------------
+
+inline int hashCell(
+    int x,
+    int y,
+    int z
+)
+{
+    uint32_t h =
+        (uint32_t)(
+            x * 73856093
+        );
+
+    h ^=
+        (uint32_t)(
+            y * 19349663
+        );
+
+    h ^=
+        (uint32_t)(
+            z * 83492791
+        );
+
+    return h % GRID_BUCKETS;
+}
+
+
+// ------------------------------------------------------------
+// Build spatial grid
+// ------------------------------------------------------------
+
+void buildGrid(int N)
+{
+    // Clear bucket heads
+    for (int i = 0;
+         i < GRID_BUCKETS;
+         i++)
     {
-        if (labels[i] == NOISE)
+        gridHead[i] = -1;
+    }
+
+    // Insert every point
+    for (int i = 0; i < N; i++)
+    {
+        int x =
+            getCellCoordinate(
+                points[i].x
+            );
+
+        int y =
+            getCellCoordinate(
+                points[i].y
+            );
+
+        int z =
+            getCellCoordinate(
+                points[i].z
+            );
+
+        cellX[i] = x;
+        cellY[i] = y;
+        cellZ[i] = z;
+
+        int bucket =
+            hashCell(
+                x,
+                y,
+                z
+            );
+
+        gridNext[i] =
+            gridHead[bucket];
+
+        gridHead[bucket] = i;
+    }
+}
+
+
+// ============================================================
+// OPTIMIZED NEIGHBOR SEARCH
+// ============================================================
+
+
+// ------------------------------------------------------------
+// Count neighbors using grid
+// ------------------------------------------------------------
+
+int optimizedCountNeighbors(
+    int pointIndex,
+    int N
+)
+{
+    int count = 0;
+
+    int baseX = cellX[pointIndex];
+    int baseY = cellY[pointIndex];
+    int baseZ = cellZ[pointIndex];
+
+    for (int dx = -1; dx <= 1; dx++)
+    {
+        for (int dy = -1; dy <= 1; dy++)
         {
-            noise++;
+            for (int dz = -1; dz <= 1; dz++)
+            {
+                int targetX =
+                    baseX + dx;
+
+                int targetY =
+                    baseY + dy;
+
+                int targetZ =
+                    baseZ + dz;
+
+                int bucket =
+                    hashCell(
+                        targetX,
+                        targetY,
+                        targetZ
+                    );
+
+                int candidate =
+                    gridHead[bucket];
+
+                while (candidate != -1)
+                {
+                    if (
+                        candidate != pointIndex &&
+                        cellX[candidate] == targetX &&
+                        cellY[candidate] == targetY &&
+                        cellZ[candidate] == targetZ
+                    )
+                    {
+                        if (
+                            squaredDistance(
+                                points[pointIndex],
+                                points[candidate]
+                            ) <=
+                            currentEpsilonSquared
+                        )
+                        {
+                            count++;
+                        }
+                    }
+
+                    candidate =
+                        gridNext[candidate];
+                }
+            }
         }
     }
 
-    return noise;
+    return count;
 }
 
+
 // ------------------------------------------------------------
-// Memory information
+// Add neighbors using grid
 // ------------------------------------------------------------
 
-void printMemoryInfo()
+int optimizedAddNeighbors(
+    int pointIndex,
+    int queueSize,
+    int N
+)
 {
-    size_t pointsMemory =
-        sizeof(Point3D) * DATASET_SIZE;
+    int baseX = cellX[pointIndex];
+    int baseY = cellY[pointIndex];
+    int baseZ = cellZ[pointIndex];
 
-    size_t labelsMemory =
-        sizeof(int) * DATASET_SIZE;
-
-    size_t queueMemory =
-        sizeof(int) * DATASET_SIZE;
-
-    size_t totalMemory =
-        pointsMemory +
-        labelsMemory +
-        queueMemory;
-
-    Serial.println();
-    Serial.println("Memory:");
-    Serial.printf(
-        "  Points: %.2f KB\n",
-        pointsMemory / 1024.0f);
-
-    Serial.printf(
-        "  Labels: %.2f KB\n",
-        labelsMemory / 1024.0f);
-
-    Serial.printf(
-        "  Queue: %.2f KB\n",
-        queueMemory / 1024.0f);
-
-    Serial.printf(
-        "  Total PSRAM: %.2f KB\n",
-        totalMemory / 1024.0f);
-}
-
-// ------------------------------------------------------------
-// Run one epsilon experiment
-// ------------------------------------------------------------
-
-void runExperiment(float epsilon)
-{
-    Serial.println();
-    Serial.println("========================================");
-    Serial.printf(
-        "EPSILON = %.2f\n",
-        epsilon);
-    Serial.println("========================================");
-
-    // Always use exactly the same dataset
-    generateDataset();
-
-    // Reset labels
-    for (int i = 0; i < DATASET_SIZE; i++)
+    for (int dx = -1; dx <= 1; dx++)
     {
-        labels[i] = UNCLASSIFIED;
+        for (int dy = -1; dy <= 1; dy++)
+        {
+            for (int dz = -1; dz <= 1; dz++)
+            {
+                int targetX =
+                    baseX + dx;
+
+                int targetY =
+                    baseY + dy;
+
+                int targetZ =
+                    baseZ + dz;
+
+                int bucket =
+                    hashCell(
+                        targetX,
+                        targetY,
+                        targetZ
+                    );
+
+                int candidate =
+                    gridHead[bucket];
+
+                while (candidate != -1)
+                {
+                    if (
+                        candidate != pointIndex &&
+                        cellX[candidate] == targetX &&
+                        cellY[candidate] == targetY &&
+                        cellZ[candidate] == targetZ
+                    )
+                    {
+                        if (
+                            squaredDistance(
+                                points[pointIndex],
+                                points[candidate]
+                            ) <=
+                            currentEpsilonSquared
+                        )
+                        {
+                            if (
+                                optimizedLabels[
+                                    candidate
+                                ] == UNCLASSIFIED
+                            )
+                            {
+                                optimizedLabels[
+                                    candidate
+                                ] = 0;
+
+                                if (
+                                    queueSize < N
+                                )
+                                {
+                                    optimizedQueue[
+                                        queueSize
+                                    ] = candidate;
+
+                                    queueSize++;
+                                }
+                            }
+                        }
+                    }
+
+                    candidate =
+                        gridNext[candidate];
+                }
+            }
+        }
     }
 
-    size_t freeHeapBefore =
-        ESP.getFreeHeap();
-
-    size_t freePsramBefore =
-        ESP.getFreePsram();
-
-    uint64_t startTime =
-        micros();
-
-    int clusterCount =
-        dbscan(epsilon);
-
-    uint64_t endTime =
-        micros();
-
-    int noiseCount =
-        countNoise();
-
-    uint64_t executionTime =
-        endTime - startTime;
-
-    size_t freeHeapAfter =
-        ESP.getFreeHeap();
-
-    size_t freePsramAfter =
-        ESP.getFreePsram();
-
-    Serial.printf(
-        "Execution time: %.3f ms\n",
-        executionTime / 1000.0);
-
-    Serial.printf(
-        "Clusters: %d\n",
-        clusterCount);
-
-    Serial.printf(
-        "Noise points: %d\n",
-        noiseCount);
-
-    Serial.printf(
-        "Free heap before: %u KB\n",
-        (unsigned int)(freeHeapBefore / 1024));
-
-    Serial.printf(
-        "Free heap after: %u KB\n",
-        (unsigned int)(freeHeapAfter / 1024));
-
-    Serial.printf(
-        "Free PSRAM before: %u KB\n",
-        (unsigned int)(freePsramBefore / 1024));
-
-    Serial.printf(
-        "Free PSRAM after: %u KB\n",
-        (unsigned int)(freePsramAfter / 1024));
+    return queueSize;
 }
 
+
 // ------------------------------------------------------------
-// Setup
+// Optimized cluster expansion
 // ------------------------------------------------------------
+
+void optimizedExpandCluster(
+    int pointIndex,
+    int clusterId,
+    int N
+)
+{
+    int queueSize = 0;
+
+    queueSize =
+        optimizedAddNeighbors(
+            pointIndex,
+            queueSize,
+            N
+        );
+
+    optimizedLabels[
+        pointIndex
+    ] = clusterId;
+
+    int queueIndex = 0;
+
+    while (queueIndex < queueSize)
+    {
+        int currentPoint =
+            optimizedQueue[
+                queueIndex
+            ];
+
+        queueIndex++;
+
+        if (
+            optimizedLabels[
+                currentPoint
+            ] == NOISE
+        )
+        {
+            optimizedLabels[
+                currentPoint
+            ] = clusterId;
+        }
+
+        if (
+            optimizedLabels[
+                currentPoint
+            ] != 0
+        )
+        {
+            continue;
+        }
+
+        optimizedLabels[
+            currentPoint
+        ] = clusterId;
+
+        int neighbors =
+            optimizedCountNeighbors(
+                currentPoint,
+                N
+            );
+
+        if (neighbors >= currentMinPts)
+        {
+            queueSize =
+                optimizedAddNeighbors(
+                    currentPoint,
+                    queueSize,
+                    N
+                );
+        }
+    }
+}
+
+
+// ------------------------------------------------------------
+// Optimized DBSCAN
+// ------------------------------------------------------------
+
+int runOptimized(
+    int N
+)
+{
+    for (int i = 0; i < N; i++)
+    {
+        optimizedLabels[i] =
+            UNCLASSIFIED;
+    }
+
+    int clusterId = 0;
+
+    for (int i = 0; i < N; i++)
+    {
+        if (
+            optimizedLabels[i] !=
+            UNCLASSIFIED
+        )
+        {
+            continue;
+        }
+
+        int neighbors =
+            optimizedCountNeighbors(
+                i,
+                N
+            );
+
+        if (neighbors < currentMinPts)
+        {
+            optimizedLabels[i] =
+                NOISE;
+        }
+        else
+        {
+            clusterId++;
+
+            optimizedExpandCluster(
+                i,
+                clusterId,
+                N
+            );
+        }
+    }
+
+    return clusterId;
+}
+
+
+// ============================================================
+// RESULT ANALYSIS
+// ============================================================
+
+int countNoise(
+    int* labels,
+    int N
+)
+{
+    int count = 0;
+
+    for (int i = 0; i < N; i++)
+    {
+        if (labels[i] == NOISE)
+            count++;
+    }
+
+    return count;
+}
+
+
+bool resultsMatch(
+    int N
+)
+{
+    for (int i = 0; i < N; i++)
+    {
+        if (
+            baselineLabels[i] !=
+            optimizedLabels[i]
+        )
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+// ============================================================
+// MEMORY
+// ============================================================
+
+void printMemory()
+{
+    size_t pointsMemory =
+        MAX_N * sizeof(Point3D);
+
+    size_t labelsMemory =
+        MAX_N * sizeof(int);
+
+    size_t queueMemory =
+        MAX_N * sizeof(int);
+
+    size_t gridHeadMemory =
+        GRID_BUCKETS * sizeof(int);
+
+    size_t gridPointMemory =
+        MAX_N * sizeof(int);
+
+    size_t cellMemory =
+        MAX_N *
+        3 *
+        sizeof(int);
+
+    Serial.println(
+        "Memory allocation:"
+    );
+
+    Serial.printf(
+        "Points: %.2f KB\n",
+        pointsMemory / 1024.0
+    );
+
+    Serial.printf(
+        "Labels: %.2f KB\n",
+        (labelsMemory * 2) / 1024.0
+    );
+
+    Serial.printf(
+        "Queues: %.2f KB\n",
+        (queueMemory * 2) / 1024.0
+    );
+
+    Serial.printf(
+        "Grid heads: %.2f KB\n",
+        gridHeadMemory / 1024.0
+    );
+
+    Serial.printf(
+        "Grid links: %.2f KB\n",
+        gridPointMemory / 1024.0
+    );
+
+    Serial.printf(
+        "Cell coordinates: %.2f KB\n",
+        cellMemory / 1024.0
+    );
+
+    size_t total =
+        pointsMemory +
+        labelsMemory * 2 +
+        queueMemory * 2 +
+        gridHeadMemory +
+        gridPointMemory +
+        cellMemory;
+
+    Serial.printf(
+        "Total allocated: %.2f KB\n",
+        total / 1024.0
+    );
+}
+
+
+// ============================================================
+// SINGLE BENCHMARK
+// ============================================================
+
+void runBenchmark(
+    int N,
+    float epsilon,
+    int minPts
+)
+{
+    currentEpsilon =
+        epsilon;
+
+    currentEpsilonSquared =
+        epsilon * epsilon;
+
+    currentMinPts =
+        minPts;
+
+
+    // --------------------------------------------------------
+    // Generate identical dataset
+    // --------------------------------------------------------
+
+    generateDataset(N);
+
+
+    // --------------------------------------------------------
+    // BASELINE
+    // --------------------------------------------------------
+
+    size_t heapBeforeBaseline =
+        ESP.getFreeHeap();
+
+    size_t psramBeforeBaseline =
+        ESP.getFreePsram();
+
+
+    unsigned long baselineStart =
+        micros();
+
+    int baselineClusters =
+        runBaseline(N);
+
+    unsigned long baselineEnd =
+        micros();
+
+
+    double baselineTime =
+        (baselineEnd -
+         baselineStart) / 1000.0;
+
+
+    int baselineNoise =
+        countNoise(
+            baselineLabels,
+            N
+        );
+
+
+    // --------------------------------------------------------
+    // Build spatial grid
+    //
+    // NOT included in optimized DBSCAN time.
+    //
+    // We measure it separately.
+    // --------------------------------------------------------
+
+    unsigned long gridStart =
+        micros();
+
+    buildGrid(N);
+
+    unsigned long gridEnd =
+        micros();
+
+
+    double gridBuildTime =
+        (gridEnd -
+         gridStart) / 1000.0;
+
+
+    // --------------------------------------------------------
+    // OPTIMIZED
+    // --------------------------------------------------------
+
+    size_t heapBeforeOptimized =
+        ESP.getFreeHeap();
+
+    size_t psramBeforeOptimized =
+        ESP.getFreePsram();
+
+
+    unsigned long optimizedStart =
+        micros();
+
+    int optimizedClusters =
+        runOptimized(N);
+
+    unsigned long optimizedEnd =
+        micros();
+
+
+    double optimizedTime =
+        (optimizedEnd -
+         optimizedStart) / 1000.0;
+
+
+    int optimizedNoise =
+        countNoise(
+            optimizedLabels,
+            N
+        );
+
+
+    // --------------------------------------------------------
+    // Comparison
+    // --------------------------------------------------------
+
+    bool identical =
+        resultsMatch(N);
+
+
+    double speedup =
+        baselineTime /
+        optimizedTime;
+
+
+    double totalOptimizedTime =
+        gridBuildTime +
+        optimizedTime;
+
+
+    double totalSpeedup =
+        baselineTime /
+        totalOptimizedTime;
+
+
+    // --------------------------------------------------------
+    // Output
+    // --------------------------------------------------------
+
+    Serial.println();
+    Serial.println(
+        "----------------------------------------"
+    );
+
+    Serial.printf(
+        "N=%d | Epsilon=%.2f | MinPts=%d\n",
+        N,
+        epsilon,
+        minPts
+    );
+
+    Serial.println(
+        "----------------------------------------"
+    );
+
+    Serial.printf(
+        "Baseline time: %.3f ms\n",
+        baselineTime
+    );
+
+    Serial.printf(
+        "Optimized time: %.3f ms\n",
+        optimizedTime
+    );
+
+    Serial.printf(
+        "Grid build time: %.3f ms\n",
+        gridBuildTime
+    );
+
+    Serial.printf(
+        "Optimized total: %.3f ms\n",
+        totalOptimizedTime
+    );
+
+    Serial.printf(
+        "DBSCAN speedup: %.2fx\n",
+        speedup
+    );
+
+    Serial.printf(
+        "Total speedup: %.2fx\n",
+        totalSpeedup
+    );
+
+    Serial.println();
+
+    Serial.printf(
+        "Baseline clusters: %d\n",
+        baselineClusters
+    );
+
+    Serial.printf(
+        "Optimized clusters: %d\n",
+        optimizedClusters
+    );
+
+    Serial.printf(
+        "Baseline noise: %d\n",
+        baselineNoise
+    );
+
+    Serial.printf(
+        "Optimized noise: %d\n",
+        optimizedNoise
+    );
+
+    Serial.printf(
+        "Results identical: %s\n",
+        identical ? "YES" : "NO"
+    );
+
+    Serial.println();
+
+    Serial.printf(
+        "Heap before baseline: %u KB\n",
+        (unsigned int)(
+            heapBeforeBaseline / 1024
+        )
+    );
+
+    Serial.printf(
+        "Heap before optimized: %u KB\n",
+        (unsigned int)(
+            heapBeforeOptimized / 1024
+        )
+    );
+
+    Serial.printf(
+        "PSRAM before baseline: %u KB\n",
+        (unsigned int)(
+            psramBeforeBaseline / 1024
+        )
+    );
+
+    Serial.printf(
+        "PSRAM before optimized: %u KB\n",
+        (unsigned int)(
+            psramBeforeOptimized / 1024
+        )
+    );
+
+    Serial.printf(
+        "PSRAM after: %u KB\n",
+        (unsigned int)(
+            ESP.getFreePsram() / 1024
+        )
+    );
+}
+
+
+// ============================================================
+// EXPERIMENT A
+// SCALING WITH N
+// ============================================================
+
+void experimentScaling()
+{
+    Serial.println();
+    Serial.println(
+        "========================================"
+    );
+
+    Serial.println(
+        "EXPERIMENT 5A"
+    );
+
+    Serial.println(
+        "SCALING WITH N"
+    );
+
+    Serial.println(
+        "========================================"
+    );
+
+    Serial.println(
+        "Fixed: Epsilon=0.20, MinPts=5"
+    );
+
+
+    runBenchmark(
+        180,
+        0.20f,
+        5
+    );
+
+    runBenchmark(
+        360,
+        0.20f,
+        5
+    );
+
+    runBenchmark(
+        720,
+        0.20f,
+        5
+    );
+
+    runBenchmark(
+        1080,
+        0.20f,
+        5
+    );
+
+    runBenchmark(
+        1440,
+        0.20f,
+        5
+    );
+}
+
+
+// ============================================================
+// EXPERIMENT B
+// EPSILON SENSITIVITY
+// ============================================================
+
+void experimentEpsilon()
+{
+    Serial.println();
+    Serial.println(
+        "========================================"
+    );
+
+    Serial.println(
+        "EXPERIMENT 5B"
+    );
+
+    Serial.println(
+        "EPSILON SENSITIVITY"
+    );
+
+    Serial.println(
+        "========================================"
+    );
+
+    Serial.println(
+        "Fixed: N=720, MinPts=5"
+    );
+
+
+    runBenchmark(
+        720,
+        0.10f,
+        5
+    );
+
+    runBenchmark(
+        720,
+        0.20f,
+        5
+    );
+
+    runBenchmark(
+        720,
+        0.30f,
+        5
+    );
+
+    runBenchmark(
+        720,
+        0.50f,
+        5
+    );
+}
+
+
+// ============================================================
+// EXPERIMENT C
+// MINPTS SENSITIVITY
+// ============================================================
+
+void experimentMinPts()
+{
+    Serial.println();
+    Serial.println(
+        "========================================"
+    );
+
+    Serial.println(
+        "EXPERIMENT 5C"
+    );
+
+    Serial.println(
+        "MINPTS SENSITIVITY"
+    );
+
+    Serial.println(
+        "========================================"
+    );
+
+    Serial.println(
+        "Fixed: N=720, Epsilon=0.20"
+    );
+
+
+    runBenchmark(
+        720,
+        0.20f,
+        2
+    );
+
+    runBenchmark(
+        720,
+        0.20f,
+        5
+    );
+
+    runBenchmark(
+        720,
+        0.20f,
+        10
+    );
+
+    runBenchmark(
+        720,
+        0.20f,
+        20
+    );
+}
+
+
+// ============================================================
+// SETUP
+// ============================================================
 
 void setup()
 {
@@ -441,51 +1400,116 @@ void setup()
     delay(2000);
 
     Serial.println();
-    Serial.println("========================================");
-    Serial.println("DBSCAN - EXPERIMENT 02");
-    Serial.println("EPSILON SENSITIVITY");
-    Serial.println("ESP32-S3 N16R8");
-    Serial.println("========================================");
+    Serial.println(
+        "========================================"
+    );
 
-    Serial.printf(
-        "Dataset size: %d\n",
-        DATASET_SIZE);
+    Serial.println(
+        "ESP32-S3 DBSCAN"
+    );
 
-    Serial.printf(
-        "Dimensions: %d\n",
-        DIMENSIONS);
+    Serial.println(
+        "Experiment 05"
+    );
 
-    Serial.printf(
-        "MinPts: %d\n",
-        MIN_PTS);
+    Serial.println(
+        "Baseline vs Optimized"
+    );
 
-    Serial.printf(
-        "Free heap: %u KB\n",
-        (unsigned int)(ESP.getFreeHeap() / 1024));
+    Serial.println(
+        "========================================"
+    );
 
-    Serial.printf(
-        "Free PSRAM: %u KB\n",
-        (unsigned int)(ESP.getFreePsram() / 1024));
+    Serial.println();
 
     // --------------------------------------------------------
-    // Allocate buffers in PSRAM
+    // Allocate maximum-size buffers
     // --------------------------------------------------------
 
-    points = (Point3D *)ps_malloc(
-        sizeof(Point3D) * DATASET_SIZE);
+    points =
+        (Point3D*)ps_malloc(
+            MAX_N *
+            sizeof(Point3D)
+        );
 
-    labels = (int *)ps_malloc(
-        sizeof(int) * DATASET_SIZE);
+    baselineLabels =
+        (int*)ps_malloc(
+            MAX_N *
+            sizeof(int)
+        );
 
-    queueBuffer = (int *)ps_malloc(
-        sizeof(int) * DATASET_SIZE);
+    baselineQueue =
+        (int*)ps_malloc(
+            MAX_N *
+            sizeof(int)
+        );
 
-    if (points == nullptr ||
-        labels == nullptr ||
-        queueBuffer == nullptr)
+    optimizedLabels =
+        (int*)ps_malloc(
+            MAX_N *
+            sizeof(int)
+        );
+
+    optimizedQueue =
+        (int*)ps_malloc(
+            MAX_N *
+            sizeof(int)
+        );
+
+
+    // Grid
+
+    gridHead =
+        (int*)ps_malloc(
+            GRID_BUCKETS *
+            sizeof(int)
+        );
+
+    gridNext =
+        (int*)ps_malloc(
+            MAX_N *
+            sizeof(int)
+        );
+
+    cellX =
+        (int*)ps_malloc(
+            MAX_N *
+            sizeof(int)
+        );
+
+    cellY =
+        (int*)ps_malloc(
+            MAX_N *
+            sizeof(int)
+        );
+
+    cellZ =
+        (int*)ps_malloc(
+            MAX_N *
+            sizeof(int)
+        );
+
+
+    // --------------------------------------------------------
+    // Allocation check
+    // --------------------------------------------------------
+
+    if (
+        points == nullptr ||
+        baselineLabels == nullptr ||
+        baselineQueue == nullptr ||
+        optimizedLabels == nullptr ||
+        optimizedQueue == nullptr ||
+        gridHead == nullptr ||
+        gridNext == nullptr ||
+        cellX == nullptr ||
+        cellY == nullptr ||
+        cellZ == nullptr
+    )
     {
-        Serial.println();
-        Serial.println("ERROR: PSRAM allocation failed!");
+        Serial.println(
+            "ERROR: PSRAM allocation failed!"
+        );
 
         while (true)
         {
@@ -493,56 +1517,63 @@ void setup()
         }
     }
 
-    Serial.println();
-    Serial.println("PSRAM allocation successful.");
-
-    printMemoryInfo();
 
     // --------------------------------------------------------
-    // Epsilon experiments
+    // Memory information
     // --------------------------------------------------------
 
-    const float epsilonValues[] =
-    {
-        0.10f,
-        0.20f,
-        0.30f,
-        0.50f,
-        0.80f,
-        1.00f,
-        1.50f
-    };
-
-    const int epsilonCount =
-        sizeof(epsilonValues) /
-        sizeof(epsilonValues[0]);
+    printMemory();
 
     Serial.println();
-    Serial.println("========================================");
-    Serial.println("STARTING EPSILON EXPERIMENTS");
-    Serial.println("========================================");
 
-    for (int i = 0; i < epsilonCount; i++)
-    {
-        runExperiment(
-            epsilonValues[i]);
+    Serial.printf(
+        "Initial free heap: %u KB\n",
+        (unsigned int)(
+            ESP.getFreeHeap() / 1024
+        )
+    );
 
-        delay(500);
-    }
+    Serial.printf(
+        "Initial free PSRAM: %u KB\n",
+        (unsigned int)(
+            ESP.getFreePsram() / 1024
+        )
+    );
+
 
     // --------------------------------------------------------
-    // Final summary
+    // Run experiments
+    // --------------------------------------------------------
+
+    experimentScaling();
+
+    experimentEpsilon();
+
+    experimentMinPts();
+
+
+    // --------------------------------------------------------
+    // Finished
     // --------------------------------------------------------
 
     Serial.println();
-    Serial.println("========================================");
-    Serial.println("EXPERIMENT 02 COMPLETE");
-    Serial.println("========================================");
+    Serial.println(
+        "========================================"
+    );
+
+    Serial.println(
+        "EXPERIMENT 05 COMPLETED"
+    );
+
+    Serial.println(
+        "========================================"
+    );
 }
 
-// ------------------------------------------------------------
-// Loop
-// ------------------------------------------------------------
+
+// ============================================================
+// LOOP
+// ============================================================
 
 void loop()
 {
