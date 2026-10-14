@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DBSCAN Benchmark Report - ESP32-S3</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  body {
+    background: #eef2f7;
+    margin: 0;
+    padding: 20px;
+    font-family: 'Vazirmatn', 'Segoe UI', Tahoma, sans-serif;
+  }
+</style>
+</head>
+<body>
+
+<div style="
+    direction: rtl;
+    text-align: right;
+    font-family: 'Vazirmatn', 'Sahel', 'IRANSans', 'Segoe UI', Tahoma, sans-serif;
+    font-size: 17px;
+    line-height: 2;
+    color: #1f2937;
+    background: #f9fafb;
+    padding: 32px 40px;
+    border-radius: 14px;
+    border: 1px solid #e5e7eb;
+    max-width: 950px;
+    margin: 20px auto;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+">
+
+  <h1 style="font-size: 28px; font-weight: 800; color: #111827; border-bottom: 3px solid #3b82f6; padding-bottom: 12px; margin-bottom: 24px;">
+    بنچمارک و بهینه‌سازی DBSCAN روی ESP32-S3
+  </h1>
+
+  <p style="font-size: 17px; color: #374151;">
+    این پروژه عملکرد الگوریتم <b>DBSCAN سه‌بعدی</b> را روی <b>ESP32-S3 N16R8</b> بررسی می‌کند
+    و از یک پیاده‌سازی پایه تا یک pipeline شبیه کاربرد واقعیِ سه‌سنسوره پیش می‌رود.
+  </p>
+
+  <h2 style="font-size: 22px; color: #1d4ed8; margin-top: 28px;">مشخصات کلی</h2>
+  <ul style="padding-right: 22px; font-size: 16.5px;">
+    <li>MCU: ESP32-S3</li>
+    <li>فرکانس CPU: 240 MHz</li>
+    <li>CPU: دو هسته</li>
+    <li>Flash: 16 MB</li>
+    <li>PSRAM: 8 MB</li>
+    <li>Framework: Arduino</li>
+    <li>Build System: PlatformIO</li>
+    <li>داده: سه‌بعدی</li>
+  </ul>
+
+  <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 28px 0;">
+
+  <h1 style="font-size: 24px; color: #111827;">۱. آزمایش Baseline Scaling</h1>
+  <h3 style="font-size: 18px; color: #374151;">روند کار</h3>
+  <p>
+    در این مرحله DBSCAN به‌صورت brute-force اجرا شد. برای پیدا کردن همسایه‌های هر نقطه،
+    کل dataset بررسی می‌شود. تعداد نقاط به‌صورت نمایی افزایش داده شد تا رفتار زمانی و حافظه مشخص شود.
+    تعداد نقاط از 90 تا 23040 بررسی شد.
+  </p>
+  <h3 style="font-size: 18px; color: #374151;">نتیجه نهایی</h3>
+  <p>پیاده‌سازی پایه تقریباً دارای این پیچیدگی است:</p>
+  <pre style="direction: ltr; text-align: left; background: #111827; color: #f9fafb; padding: 14px 18px; border-radius: 8px; font-family: 'Fira Code', 'Consolas', monospace; font-size: 14.5px; line-height: 1.7; overflow-x: auto;">Time   ≈ O(N²)
+Memory ≈ O(N)</pre>
+
+  <p>در <code style="background:#eef2ff; padding:2px 6px; border-radius:4px;">N = 11520</code>:</p>
+  <pre style="direction: ltr; text-align: left; background: #111827; color: #f9fafb; padding: 14px 18px; border-radius: 8px; font-family: 'Fira Code', 'Consolas', monospace; font-size: 14.5px; line-height: 1.7;">زمان اجرا ≈ 79.438 ثانیه
+حافظه اصلی DBSCAN ≈ 225 KB
+PSRAM آزاد ≈ 7.96 MB</pre>
+
+  <p>
+    بنابراین محدودیت نسخه پایه بیشتر <b>محاسباتی</b> است، نه کمبود حافظه.
+    برای <code style="background:#eef2ff; padding:2px 6px; border-radius:4px;">N = 23040</code> اجرای کامل نهایی گزارش نشد.
+  </p>
+
+  <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 28px 0;">
+
+  <h1 style="font-size: 24px; color: #111827;">۲. آزمایش Epsilon Sensitivity</h1>
+  <h3 style="font-size: 18px; color: #374151;">روند کار</h3>
+  <p>
+    با ثابت نگه داشتن تعداد نقاط، ابعاد و <code>MinPts</code>، مقدار <code>epsilon</code> تغییر داده شد
+    تا اثر شعاع همسایگی روی تعداد clusterها، نویز و زمان اجرا مشخص شود.
+  </p>
+  <pre style="direction:ltr; text-align:left; background:#111827; color:#f9fafb; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">N = 1440
+Dimensions = 3
+MinPts = 5
+ε = 0.10 تا 1.50</pre>
+
+  <h3 style="font-size: 18px; color: #374151;">نتیجه نهایی</h3>
+  <ul style="padding-right: 22px; font-size: 16.5px;">
+    <li>در <code>ε = 0.10</code> سه نقطه noise شدند.</li>
+    <li>از <code>ε ≥ 0.20</code> در dataset آزمایش noise اصلی از بین رفت.</li>
+    <li>زمان اجرا فقط مقدار محدودی تغییر کرد.</li>
+    <li>در brute-force، تغییر epsilon تعداد scanهای کلی را خیلی تغییر نمی‌دهد.</li>
+  </ul>
+  <p><b>نتیجه:</b> epsilon بیشتر روی <b>رفتار clustering</b> اثر دارد تا روی حافظه و زمان نسخه brute-force.</p>
+
+  <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 28px 0;">
+
+  <h1 style="font-size: 24px; color: #111827;">۳. آزمایش MinPts Sensitivity</h1>
+  <pre style="direction:ltr; text-align:left; background:#111827; color:#f9fafb; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">N = 1440
+ε = 0.20
+MinPts = 2, 5, 10, 20, 50, 100, 200</pre>
+  <ul style="padding-right: 22px; font-size: 16.5px;">
+    <li><code>MinPts = 2</code>: بیش از حد permissive بود.</li>
+    <li><code>MinPts = 5</code>: بهترین رفتار را در dataset آزمایش ایجاد کرد.</li>
+    <li><code>MinPts = 10</code>: باعث fragmentation شد.</li>
+    <li><code>MinPts = 20</code>: بیشتر نقاط noise شدند.</li>
+    <li><code>MinPts ≥ 50</code>: تمام نقاط noise شدند.</li>
+  </ul>
+  <p><b>نتیجه:</b> <code>MinPts</code> مستقیماً سخت‌گیری density را کنترل می‌کند.</p>
+
+  <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 28px 0;">
+
+  <h1 style="font-size: 24px; color: #111827;">۴. آزمایش Density Sensitivity</h1>
+  <pre style="direction:ltr; text-align:left; background:#111827; color:#f9fafb; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">Dense   → radius = 0.25
+Medium  → radius = 0.60
+Sparse  → radius = 1.20</pre>
+  <ul style="padding-right: 22px; font-size: 16.5px;">
+    <li>Dense بیشترین cluster expansion و بیشترین زمان را داشت.</li>
+    <li>Medium رفتار میانی داشت.</li>
+    <li>Sparse به دلیل کم بودن نقاط core، بسیار سریع‌تر شد.</li>
+  </ul>
+  <p><b>نتیجه:</b> تراکم داده روی <b>زمان واقعی اجرا</b> اثر زیادی دارد.</p>
+
+  <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 28px 0;">
+
+  <h1 style="font-size: 24px; color: #111827;">۵. آزمایش Spatial Grid Optimization</h1>
+  <p>بهترین speedup:</p>
+  <pre style="direction:ltr; text-align:left; background:#065f46; color:#ecfdf5; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">N = 720
+ε = 0.10
+MinPts = 5
+
+Baseline = 111.411 ms
+Optimized total = 5.186 ms
+Speedup = 21.48×</pre>
+  <p>در <code>N = 1440</code>:</p>
+  <pre style="direction:ltr; text-align:left; background:#111827; color:#f9fafb; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">Baseline = 837.438 ms
+Optimized total = 56.784 ms
+Speedup = 14.75×</pre>
+  <p><b>نتیجه:</b> Spatial Grid مهم‌ترین بهینه‌سازی کل پروژه بود.</p>
+
+  <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 28px 0;">
+
+  <h1 style="font-size: 24px; color: #111827;">۶. آزمایش Dual-Core — روش A</h1>
+  <p>تشخیص <code>core-point</code> بین Core 0 و Core 1 تقسیم شد، ولی cluster expansion روی یک هسته ماند.</p>
+  <pre style="direction:ltr; text-align:left; background:#111827; color:#f9fafb; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">Baseline = 693.067 ms
+Dual-Core = 685.656 ms
+Speedup = 1.01×
+Improvement = 1.07%</pre>
+
+  <h1 style="font-size: 24px; color: #111827;">۷. آزمایش Dual-Core — روش B</h1>
+  <p>در هر neighborhood query، Core 0 نصف نقاط و Core 1 نیمه دیگر را بررسی کردند.</p>
+  <pre style="direction:ltr; text-align:left; background:#7f1d1d; color:#fef2f2; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">Baseline = 645.262 ms
+Dual-Core = 787.090 ms
+Speedup = 0.82×  ⚠️ کندتر شد</pre>
+  <p><b>نتیجه:</b> هزینه synchronization بیشتر از سود parallelization شد.</p>
+
+  <h1 style="font-size: 24px; color: #111827;">۸. آزمایش Dual-Core — روش C</h1>
+  <pre style="direction:ltr; text-align:left; background:#111827; color:#f9fafb; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">Single-Core Grid = 37.085 ms
+Dual-Core Grid   = 36.703 ms
+Speedup = 1.01×</pre>
+
+  <h1 style="font-size: 24px; color: #111827;">۹. آزمایش Dual-Core — روش D ⭐</h1>
+  <p>در این روش خود <b>cluster expansion</b> موازی شد.</p>
+  <pre style="direction:ltr; text-align:left; background:#065f46; color:#ecfdf5; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">Expansion speedup = 1.05×
+End-to-end speedup = 1.03×
+Improvement = 2.88%
+Different labels = 0</pre>
+  <p><b>نتیجه:</b> روش D بهترین روش Dual-Core آزمایش‌شده بود.</p>
+
+  <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 28px 0;">
+
+  <h1 style="font-size: 24px; color: #111827;">۱۰. آزمایش Three-Sensor Simulation</h1>
+  <p>یک pipeline شبیه کاربرد واقعی ساخته شد:</p>
+  <pre style="direction:ltr; text-align:left; background:#111827; color:#f9fafb; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">Sensor 1 ─┐
+Sensor 2 ─┼→ Ingest/Parsing → Fusion → Spatial Grid
+Sensor 3 ─┘                         ↓
+                                   DBSCAN
+                                     ↓
+                              Human Analysis</pre>
+  <pre style="direction:ltr; text-align:left; background:#065f46; color:#ecfdf5; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">2 simulated humans
+        ↓
+2 DBSCAN clusters
+        ↓
+2 human-like clusters  ✅</pre>
+
+  <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 28px 0;">
+
+  <h1 style="font-size: 24px; color: #111827;">۱۱. آزمایش Real-Time Limit — 07B</h1>
+  <p>بودجه هر frame در نرخ <b>10 FPS</b>:</p>
+  <pre style="direction:ltr; text-align:left; background:#111827; color:#f9fafb; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">100 ms</pre>
+
+  <h3 style="font-size: 18px; color: #374151;">نتیجه موفق ✅</h3>
+  <pre style="direction:ltr; text-align:left; background:#065f46; color:#ecfdf5; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">104 points / human / sensor
+660 points / frame
+6600 points / second @ 10 FPS
+
+Average pipeline = 89.357 ms
+Maximum pipeline = 96.496 ms
+
+Detection stable = YES (2 humans)</pre>
+
+  <h3 style="font-size: 18px; color: #374151;">اولین configuration ناموفق ❌</h3>
+  <pre style="direction:ltr; text-align:left; background:#7f1d1d; color:#fef2f2; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">108 points / human / sensor
+684 points / frame
+Maximum pipeline = 101.247 ms
+Frame overruns = 5 / 12</pre>
+
+  <p>مرز عملی آزمایش‌شده:</p>
+  <pre style="direction:ltr; text-align:left; background:#111827; color:#f9fafb; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">660 points/frame   ✅
+684 points/frame   ❌</pre>
+
+  <p>زمان متوسط بخش‌ها در configuration موفق:</p>
+  <pre style="direction:ltr; text-align:left; background:#111827; color:#f9fafb; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">Ingest + fusion ≈ 3.396 ms
+Grid + DBSCAN   ≈ 84.708 ms
+Human analysis  ≈ 1.250 ms</pre>
+
+  <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 28px 0;">
+
+  <h1 style="font-size: 24px; color: #111827;">۱۲. جمع‌بندی نهایی پروژه</h1>
+
+  <pre style="direction:ltr; text-align:left; background:#111827; color:#f9fafb; padding:14px 18px; border-radius:8px; font-family:'Fira Code',monospace; font-size:14.5px;">Baseline DBSCAN
+      ↓
+Parameter Analysis
+      ↓
+Spatial Grid
+      ↓
+Dual-Core Experiments
+      ↓
+3-Sensor Simulation
+      ↓
+Human Movement + Fusion
+      ↓
+Real-Time Limit Test</pre>
+
+  <h3 style="font-size: 20px; color: #1d4ed8;">نتیجه اصلی پروژه</h3>
+  <blockquote style="background: #eff6ff; border-right: 5px solid #3b82f6; padding: 18px 22px; border-radius: 8px; font-size: 17px; color: #1e3a8a; margin: 16px 0;">
+    روی ESP32-S3، بهینه‌سازی الگوریتمی جستجوی همسایه بسیار مهم‌تر از parallelization ساده است.
+    Spatial Grid بزرگ‌ترین بهبود را ایجاد می‌کند (<b>21.48×</b>) و Dual-Core زمانی مفید است که
+    روی بخش محاسباتی مناسب، مانند cluster expansion، اعمال شود. در pipeline چندسنسوره شبیه‌سازی‌شده،
+    سیستم فعلی در نرخ 10 FPS حداقل <b>660 نقطه در هر frame</b> را به‌صورت real-time و با تشخیص پایدار
+    دو انسان پردازش می‌کند.
+  </blockquote>
+
+  <h3 style="font-size: 20px; color: #b45309;">محدودیت فعلی</h3>
+  <p>
+    آزمایش Real-Time هنوز با داده‌های سنسوری شبیه‌سازی‌شده انجام شده است و دریافت فیزیکی سه آنتن واقعی،
+    baud rate، packet format، buffering و overhead واقعی UART هنوز وارد benchmark نشده‌اند.
+    بنابراین عدد 6600 point/s یک <b>نتیجه تجربی برای pipeline شبیه‌سازی‌شده فعلی</b> است،
+    نه سقف نظری نهایی ESP32-S3.
+  </p>
+
+</div>
+
+</body>
+</html>
