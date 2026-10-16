@@ -315,21 +315,3 @@ Simulated multi-sensor pipeline feeding the optimized DBSCAN, targeting a
   introduced.
 - Keep a fixed set of regression configurations so that any future optimization
   can be checked against the Phase 1 baseline labels and timings.
-
-## Result files
-
-The following image paths are referenced by this report and are produced by
-`generate_phase1_figures.py` into `results/phase1/figures/`:
-
-- `figures/01_baseline_scaling_runtime.png`
-- `figures/02_baseline_scaling_memory.png`
-- `figures/03_spatial_grid_speedup.png`
-- `figures/04_epsilon_sensitivity.png`
-- `figures/05_minpts_sensitivity.png`
-- `figures/06_density_sensitivity.png`
-- `figures/07_dbscan_3d_clusters.png`
-- `figures/08_kalman_rmse.png` (used in the Phase 1 / Phase 2 handoff discussion)
-- `figures/09_pipeline_architecture.png`
-
-If your repository places the images elsewhere, update the relative paths in
-the sections above.
