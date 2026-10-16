@@ -81,7 +81,7 @@ The experiment demonstrates:
 - Computational limitation before PSRAM exhaustion
 - Baseline DBSCAN performance on the ESP32-S3
 
-[Read Experiment 01 →](README_01_Baseline_Scaling.md)
+[Read Experiment 01 →](results/phase1/README_01_Baseline_Scaling.md)
 
 ---
 
@@ -106,7 +106,7 @@ The experiment investigates:
 - Memory consumption
 - Effect of epsilon on brute-force DBSCAN
 
-[Read Experiment 02 →](README_02_Epsilon_Sensitivity.md)
+[Read Experiment 02 →](results/phase1/README_02_Epsilon_Sensitivity.md)
 
 ---
 
@@ -133,7 +133,7 @@ The experiment measures:
 - Execution time
 - Memory usage
 
-[Read Experiment 03 →](README_03_MinPts_Sensitivity.md)
+[Read Experiment 03 →](results/phase1/README_03_MinPts_Sensitivity.md)
 
 ---
 
@@ -165,7 +165,7 @@ The experiment investigates how density affects:
 - Execution time
 - Memory usage
 
-[Read Experiment 04 →](README_04_Density_Sensitivity.md)
+[Read Experiment 04 →](results/phase1/README_04_Density_Sensitivity.md)
 
 ---
 
@@ -206,7 +206,7 @@ Correctness:
 All 13 benchmark configurations matched the baseline
 ```
 
-[Read Experiment 05 →](README_05_Baseline_vs_Optimized.md)
+[Read Experiment 05 →](results/phase1/README_05_Baseline_vs_Optimized.md)
 
 ---
 
@@ -242,7 +242,7 @@ The dual-core study focuses on:
 
 The main finding is that **parallelizing cluster expansion is more effective than parallelizing core detection or performing very fine-grained per-query parallelism**. At `N = 1440`, Experiment D achieved `1.05×` speedup for cluster expansion and `1.03×` end-to-end speedup, while all tested A–D configurations preserved identical DBSCAN labels.
 
-[Read Experiment 06 — Dual-Core Experiments →](README_06_Dual_Core_Experiments.md)
+[Read Experiment 06 — Dual-Core Experiments →](results/phase1/README_06_Dual_Core_Experiments.md)
 
 ---
 
@@ -411,9 +411,9 @@ This design preserves exact clustering results while providing the best measured
 
 | Experiment | Report |
 |---|---|
-| 01 | [Baseline Scaling](README_01_Baseline_Scaling.md) |
-| 02 | [Epsilon Sensitivity](README_02_Epsilon_Sensitivity.md) |
-| 03 | [MinPts Sensitivity](README_03_MinPts_Sensitivity.md) |
-| 04 | [Density Sensitivity](README_04_Density_Sensitivity.md) |
-| 05 | [Baseline vs Optimized](README_05_Baseline_vs_Optimized.md) |
-| 06 | [Dual-Core Experiments A–D](README_06_Dual_Core_Experiments.md) |
+| 01 | [Baseline Scaling](results/phase1/README_01_Baseline_Scaling.md) |
+| 02 | [Epsilon Sensitivity](results/phase1/README_02_Epsilon_Sensitivity.md) |
+| 03 | [MinPts Sensitivity](results/phase1/README_03_MinPts_Sensitivity.md) |
+| 04 | [Density Sensitivity](results/phase1/README_04_Density_Sensitivity.md) |
+| 05 | [Baseline vs Optimized](results/phase1/README_05_Baseline_vs_Optimized.md) |
+| 06 | [Dual-Core Experiments A–D](results/phase1/README_06_Dual_Core_Experiments.md) |
